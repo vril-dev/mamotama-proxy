@@ -106,6 +106,46 @@ jobs:
       - name: Install CRS
         run: ./scripts/install_crs.sh
 
+      - name: Coraza smoke check
+        env:
+          WAF_STORAGE_BACKEND: ${{ matrix.waf_storage_backend }}
+          WAF_DB_ENABLED: ${{ matrix.waf_db_enabled }}
+          WAF_DB_RETENTION_DAYS: "30"
+        run: |
+          set -euo pipefail
+          cleanup() {
+            PUID="$(id -u)" GUID="$(id -g)" CORAZA_PORT=19090 docker compose down --remove-orphans >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          PUID="$(id -u)" \
+          GUID="$(id -g)" \
+          CORAZA_PORT=19090 \
+          docker compose up -d --build coraza
+
+          for i in $(seq 1 60); do
+            code="$(curl -sS -o /dev/null -w "%{http_code}" "http://localhost:19090/healthz" || true)"
+            if [[ "${code}" == "200" ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          code="$(curl -sS -o /dev/null -w "%{http_code}" "http://localhost:19090/healthz" || true)"
+          if [[ "${code}" != "200" ]]; then
+            echo "coraza health check failed: ${code}" >&2
+            docker compose ps coraza || true
+            docker compose logs --tail=120 coraza || true
+            exit 1
+          fi
+
+          attack_code="$(curl -sS -o /dev/null -w "%{http_code}" "http://localhost:19090/?q=<script>alert(1)</script>" || true)"
+          if [[ "${attack_code}" != "403" ]]; then
+            echo "expected 403 for basic XSS probe, got ${attack_code}" >&2
+            docker compose logs --tail=120 coraza || true
+            exit 1
+          fi
+
       - name: Run GoTestWAF
         env:
           GOTESTWAF_AUTO_DOWN: "1"

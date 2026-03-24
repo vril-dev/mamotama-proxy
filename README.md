@@ -55,6 +55,7 @@ You can control behavior via `.env`.
 | Variable | Example | Description |
 | --- | --- | --- |
 | `WAF_LISTEN_ADDR` | `:9090` | Listen address for Coraza single-binary service. |
+| `WAF_LISTEN_PORT` | `9090` | Container-side listen port used by Compose (`ports`, healthcheck, GoTestWAF target). Keep this aligned with `WAF_LISTEN_ADDR` port. |
 | `WAF_APP_URL` | `http://host.docker.internal:3000` | Upstream application URL (change appropriately for production such as ALB/ECS). |
 | `WAF_LOG_FILE` | (empty) | WAF log output destination. If empty, stdout is used. |
 | `WAF_BYPASS_FILE` | `conf/waf.bypass` | Path for bypass/special-rule definition file. |
@@ -171,6 +172,14 @@ docker compose up -d coraza
 ```
 
 You can change the root path by setting `VITE_APP_BASE_PATH` and `VITE_CORAZA_API_BASE` in `.env`.
+
+#### Optional: Legacy Log Directory Migration
+
+If you are upgrading from older versions, run this once to merge legacy `*.ndjson` files under `data/logs/` into `data/logs/proxy/`:
+
+```bash
+./scripts/migrate_proxy_logs.sh
+```
 
 #### Optional: Local MySQL Container (profile: `mysql`)
 

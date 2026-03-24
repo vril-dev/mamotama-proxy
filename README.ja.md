@@ -56,6 +56,7 @@ Coraza + CRS WAFプロジェクト
 | 変数名 | 例 | 説明 |
 | --- | --- | --- |
 | `WAF_LISTEN_ADDR` | `:9090` | Corazaシングルバイナリサービスの待受アドレス。 |
+| `WAF_LISTEN_PORT` | `9090` | Compose で使うコンテナ側待受ポート（`ports` / healthcheck / GoTestWAF ターゲット）。`WAF_LISTEN_ADDR` のポートと揃えてください。 |
 | `WAF_APP_URL` | `http://host.docker.internal:3000` | 透過先アプリの URL（ALB/ECS 等の本番では適宜変更）。 |
 | `WAF_LOG_FILE` | (空) | WAFログの出力先。未設定なら標準出力。 |
 | `WAF_BYPASS_FILE` | `conf/waf.bypass` | バイパス/特別ルール定義ファイルのパス。 |
@@ -172,6 +173,14 @@ docker compose up -d coraza
 ```
 
 環境変数 `.env` に `VITE_APP_BASE_PATH` および `VITE_CORAZA_API_BASE` を定義することで、ルートパスを変更できます。
+
+#### 任意: 旧ログディレクトリの移行
+
+旧バージョンから更新する場合は、`data/logs/` 配下のレガシー `*.ndjson` を `data/logs/proxy/` に統合するため、初回のみ以下を実行してください。
+
+```bash
+./scripts/migrate_proxy_logs.sh
+```
 
 #### 任意: ローカル MySQL コンテナ（profile: `mysql`）
 
