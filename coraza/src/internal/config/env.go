@@ -12,6 +12,7 @@ import (
 
 var (
 	AppURL           string
+	ListenAddr       string
 	RulesFile        string
 	BypassFile       string
 	CountryBlockFile string
@@ -55,6 +56,7 @@ func LoadEnv() {
 	_ = godotenv.Load()
 
 	AppURL = os.Getenv("WAF_APP_URL")
+	ListenAddr = parseListenAddr(os.Getenv("WAF_LISTEN_ADDR"))
 	RulesFile = os.Getenv("WAF_RULES_FILE")
 	BypassFile = os.Getenv("WAF_BYPASS_FILE")
 	CountryBlockFile = strings.TrimSpace(os.Getenv("WAF_COUNTRY_BLOCK_FILE"))
@@ -273,4 +275,18 @@ func parseDBSyncIntervalSec(v string) int {
 		return 3600
 	}
 	return n
+}
+
+func parseListenAddr(v string) string {
+	s := strings.TrimSpace(v)
+	if s == "" {
+		return ":9090"
+	}
+	if strings.HasPrefix(s, ":") {
+		return s
+	}
+	if _, err := strconv.Atoi(s); err == nil {
+		return ":" + s
+	}
+	return s
 }

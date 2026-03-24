@@ -21,14 +21,13 @@ import (
 )
 
 var (
-	logDirCoraza          = "logs/coraza"
-	logDirNginx           = "logs/nginx"
-	logDirOpenrestyLegacy = "logs/openresty"
+	logDirCoraza = "logs/coraza"
+	logDirProxy  = "logs/proxy"
 
 	logFiles = map[string]string{
 		"waf":    filepath.Join(logDirCoraza, "waf-events.ndjson"),
-		"accerr": filepath.Join(logDirNginx, "access-error.ndjson"),
-		"intr":   filepath.Join(logDirNginx, "interesting.ndjson"),
+		"accerr": filepath.Join(logDirProxy, "access-error.ndjson"),
+		"intr":   filepath.Join(logDirProxy, "interesting.ndjson"),
 	}
 
 	readChunkSize   = int64(64 * 1024)
@@ -475,10 +474,6 @@ func resolveLogPath(src, current string) string {
 	}
 	if _, err := os.Stat(current); err == nil {
 		return current
-	}
-	legacy := strings.Replace(current, logDirNginx+"/", logDirOpenrestyLegacy+"/", 1)
-	if _, err := os.Stat(legacy); err == nil {
-		return legacy
 	}
 	return current
 }

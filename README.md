@@ -50,19 +50,11 @@ You can control behavior via `.env`.
 | `MYSQL_ROOT_PASSWORD` | `mamotama-root` | Root password for local MySQL container. |
 | `MYSQL_TZ` | `UTC` | Container timezone. |
 
-### Nginx
-
-| Variable | Example | Description |
-| --- | --- | --- |
-| `NGX_CORAZA_UPSTREAM` | `server coraza:9090;` | Upstream definition for Coraza (Go server). You can list multiple `server host:port;` lines for simple load balancing. |
-| `NGX_BACKEND_RESPONSE_TIMEOUT` | `60s` | Upstream response timeout from Coraza. Applied to `proxy_read_timeout`. |
-| `NGX_CORAZA_ADMIN_URL` | `/mamotama-admin/` | Public path for admin UI. Trailing slash required. Requests under this path are proxied to frontend (`web:5173`). |
-| `NGX_CORAZA_API_BASEPATH` | `/mamotama-api/` | Base path for admin API. Trailing slash recommended. This path is always non-cacheable on nginx side. |
-
 ### WAF / Go (Coraza Wrapper)
 
 | Variable | Example | Description |
 | --- | --- | --- |
+| `WAF_LISTEN_ADDR` | `:9090` | Listen address for Coraza single-binary service. |
 | `WAF_APP_URL` | `http://host.docker.internal:3000` | Upstream application URL (change appropriately for production such as ALB/ECS). |
 | `WAF_LOG_FILE` | (empty) | WAF log output destination. If empty, stdout is used. |
 | `WAF_BYPASS_FILE` | `conf/waf.bypass` | Path for bypass/special-rule definition file. |
@@ -162,7 +154,6 @@ For local testing only, you can temporarily relax this with `WAF_ALLOW_INSECURE_
 ### Libraries
 
 - coraza 3.3.3
-- nginx 1.27
 - go 1.25.7
 - React 19
 - Vite 7
@@ -174,9 +165,9 @@ For local testing only, you can temporarily relax this with `WAF_ALLOW_INSECURE_
 
 ```bash
 ./scripts/install_crs.sh
-docker compose build coraza nginx
+docker compose build coraza
 docker compose up web
-docker compose up -d coraza nginx
+docker compose up -d coraza
 ```
 
 You can change the root path by setting `VITE_APP_BASE_PATH` and `VITE_CORAZA_API_BASE` in `.env`.
@@ -206,9 +197,8 @@ Run the local regression test:
 Prerequisites:
 
 - Docker and Docker Compose are available.
-- The script automatically builds/starts `coraza` and `nginx`.
-- Default host ports are `HOST_CORAZA_PORT=19090` and `HOST_NGINX_PORT=18080`.
-- Legacy `HOST_OPENRESTY_PORT` is still accepted for compatibility.
+- The script automatically builds/starts `coraza`.
+- Default host port is `HOST_CORAZA_PORT=19090`.
 - The first run may take longer because the GoTestWAF image is pulled.
 
 Default gate is `MIN_BLOCKED_RATIO=70`. Optional extra gates:
@@ -560,12 +550,12 @@ Field details:
 - `regex`: regex match (`^` and `$` supported)
 - `methods`: target HTTP methods (comma-separated)
 - `ttl`: cache duration in seconds
-- `vary`: `Vary` header values for nginx (comma-separated)
+- `vary`: `Vary` header values added to response (comma-separated)
 
 ### Behavior Summary
 
 - Go side sets `X-Mamotama-Cacheable` and `X-Accel-Expires` on responses matching cache rules
-- nginx controls cache based on those headers
+- these headers can be consumed by external cache/CDN layers if needed
 - Requests with auth headers, cookies, or API paths are non-cacheable by default
 - Upstream responses containing `Set-Cookie` are not stored (to prevent shared-cache leakage)
 
@@ -575,14 +565,14 @@ Check response headers:
 - `X-Mamotama-Cacheable: 1`
 - `X-Accel-Expires: <seconds>`
 
-You can inspect cache hit state using nginx `X-Cache-Status` header (`MISS`/`HIT`/`BYPASS`, etc.).
+By default this stack does not include an internal HTTP cache layer.
 
 ---
 
 ## Admin UI Access Restrictions
 
 This project does not include access control by default.
-If you expose admin UI (`NGX_CORAZA_ADMIN_URL`), always configure access controls such as Basic Auth and/or IP restrictions.
+If you expose admin UI (`VITE_APP_BASE_PATH`), always configure access controls such as Basic Auth and/or IP restrictions.
 
 ---
 

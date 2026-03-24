@@ -51,19 +51,11 @@ Coraza + CRS WAFプロジェクト
 | `MYSQL_ROOT_PASSWORD` | `mamotama-root` | ローカル MySQL コンテナの root パスワード。 |
 | `MYSQL_TZ` | `UTC` | コンテナのタイムゾーン。 |
 
-### Nginx
-
-| 変数名 | 例 | 説明 |
-| --- | --- | --- |
-| `NGX_CORAZA_UPSTREAM` | `server coraza:9090;` | Coraza（Goサーバ）の upstream 定義。`server host:port;` を複数行で並べれば簡易ロードバランス可。 |
-| `NGX_BACKEND_RESPONSE_TIMEOUT` | `60s` | 上流（Coraza）からの応答タイムアウト。`proxy_read_timeout` に反映。 |
-| `NGX_CORAZA_ADMIN_URL` | `/mamotama-admin/` | 管理UIの公開パス。末尾スラッシュ必須。このパスに来たリクエストをフロント（`web:5173`）へプロキシ。 |
-| `NGX_CORAZA_API_BASEPATH` | `/mamotama-api/` | 管理APIのベースパス。末尾スラッシュ推奨。このパス配下は nginx 側で常に非キャッシュ扱い。 |
-
 ### WAF / Go（Coraza ラッパー）
 
 | 変数名 | 例 | 説明 |
 | --- | --- | --- |
+| `WAF_LISTEN_ADDR` | `:9090` | Corazaシングルバイナリサービスの待受アドレス。 |
 | `WAF_APP_URL` | `http://host.docker.internal:3000` | 透過先アプリの URL（ALB/ECS 等の本番では適宜変更）。 |
 | `WAF_LOG_FILE` | (空) | WAFログの出力先。未設定なら標準出力。 |
 | `WAF_BYPASS_FILE` | `conf/waf.bypass` | バイパス/特別ルール定義ファイルのパス。 |
@@ -163,7 +155,6 @@ Coraza + CRS WAFプロジェクト
 ### ライブラリ
 
 * coraza 3.3.3
-* nginx 1.27
 * go 1.25.7
 * React 19
 * Vite 7
@@ -175,9 +166,9 @@ Coraza + CRS WAFプロジェクト
 
 ```bash
 ./scripts/install_crs.sh
-docker compose build coraza nginx
+docker compose build coraza
 docker compose up web
-docker compose up -d coraza nginx
+docker compose up -d coraza
 ```
 
 環境変数 `.env` に `VITE_APP_BASE_PATH` および `VITE_CORAZA_API_BASE` を定義することで、ルートパスを変更できます。
@@ -207,9 +198,8 @@ MySQL をDBログ/設定運用で使う場合は、`WAF_STORAGE_BACKEND=db`・`W
 前提条件:
 
 - Docker と Docker Compose が利用可能であること
-- スクリプトが `coraza` と `nginx` を自動で build/up すること
-- 既定のホスト公開ポートは `HOST_CORAZA_PORT=19090` と `HOST_NGINX_PORT=18080`
-- 互換のため `HOST_OPENRESTY_PORT` も引き続き利用可能
+- スクリプトが `coraza` を自動で build/up すること
+- 既定のホスト公開ポートは `HOST_CORAZA_PORT=19090`
 - 初回実行時は GoTestWAF イメージ取得のため時間がかかる場合があること
 
 デフォルトの合否基準は `MIN_BLOCKED_RATIO=70` です。追加基準は任意で指定できます:
@@ -563,12 +553,12 @@ DENY regex=^/users/[0-9]+/profile
 - regex: 正規表現でマッチ（`^`や`$`を使って指定可能）
 - methods: 対象HTTPメソッド（カンマ区切り）
 - ttl: キャッシュ時間（秒）
-- vary: nginxに渡すVaryヘッダ値（カンマ区切り）
+- vary: レスポンスに付与するVaryヘッダ値（カンマ区切り）
 
 ### 動作概要
 
 - Go側でルールに一致したレスポンスに `X-Mamotama-Cacheable` と `X-Accel-Expires` を付与
-- nginx がこれらのヘッダを元にキャッシュを管理
+- 必要に応じて外部キャッシュ/CDNがこれらのヘッダを利用可能
 - 認証付きリクエスト、Cookieあり、APIパスはデフォルトでキャッシュされません
 - `Set-Cookie` を含む上流レスポンスは保存されません（共有キャッシュ誤配信防止）
 
@@ -577,14 +567,14 @@ DENY regex=^/users/[0-9]+/profile
 - レスポンスヘッダに以下が含まれているか確認
   - `X-Mamotama-Cacheable: 1`
   - `X-Accel-Expires: <秒数>`
-- nginx の `X-Cache-Status` ヘッダでキャッシュヒット状況を確認可能（MISS/HIT/BYPASS 等）
+- 既定構成には内部HTTPキャッシュ層は含まれません
 
 ---
 
 ## 管理画面のアクセス制限について
 
 本プロジェクトにはデフォルトでアクセス制限機能は含まれていません。  
-管理画面（NGX_CORAZA_ADMIN_URL で公開されるパス）を利用する場合は、必ず Basic 認証や IP 制限などのアクセス制御を設定してください。
+管理画面（`VITE_APP_BASE_PATH` で公開されるパス）を利用する場合は、必ず Basic 認証や IP 制限などのアクセス制御を設定してください。
 
 ---
 

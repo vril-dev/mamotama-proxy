@@ -181,5 +181,8 @@ func main() {
 		defer stopWatch()
 	}
 
-	r.Run(":9090")
+	log.Printf("[INFO] starting server on %s", config.ListenAddr)
+	if err := r.Run(config.ListenAddr); err != nil {
+		log.Fatalf("[FATAL] server stopped: %v", err)
+	}
 }
