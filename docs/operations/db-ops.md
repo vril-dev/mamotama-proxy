@@ -96,7 +96,7 @@ If DB is missing/corrupted:
 
 1. Stop stack (`docker compose down`).
 2. Move broken DB file aside.
-3. Start stack (`docker compose up -d coraza nginx`).
+3. Start stack (`docker compose up -d coraza`).
 4. Call `/mamotama-api/logs/stats` once to trigger `waf_events` re-ingest from `waf-events.ndjson`.
 5. Re-save important config via admin API if needed to re-seed `config_blobs`.
 

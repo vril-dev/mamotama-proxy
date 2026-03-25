@@ -449,7 +449,7 @@ func requestFPTunerProposal(req fpTunerProviderRequest) (fpTunerProposal, string
 		p, err := requestFPTunerProposalHTTP(req)
 		return p, mode, err
 	default:
-		return fpTunerProposal{}, "", fmt.Errorf("unsupported WAF_FP_TUNER_MODE: %s", mode)
+		return fpTunerProposal{}, "", fmt.Errorf("unsupported fp_tuner.mode: %s", mode)
 	}
 }
 
@@ -472,7 +472,7 @@ func requestFPTunerProposalMock(req fpTunerProviderRequest) (fpTunerProposal, er
 func requestFPTunerProposalHTTP(req fpTunerProviderRequest) (fpTunerProposal, error) {
 	endpoint := strings.TrimSpace(config.FPTunerEndpoint)
 	if endpoint == "" {
-		return fpTunerProposal{}, fmt.Errorf("WAF_FP_TUNER_ENDPOINT is empty")
+		return fpTunerProposal{}, fmt.Errorf("fp_tuner.endpoint is empty")
 	}
 
 	body, err := json.Marshal(req)

@@ -540,7 +540,7 @@ func TestInitLogsStatsStoreWithBackend_MySQLRequiresDSN(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing mysql dsn")
 	}
-	if !strings.Contains(err.Error(), "requires WAF_DB_DSN") {
+	if !strings.Contains(err.Error(), "requires storage.db_dsn") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

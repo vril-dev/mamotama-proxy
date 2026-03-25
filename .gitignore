@@ -33,18 +33,19 @@ go.work.sum
 
 data/rules/*
 !data/rules/mamotama.conf
-data/conf
+data/conf/*
+!data/conf/
 !data/conf/cache.conf
 !data/conf/waf.bypass
 !data/conf/crs-disabled.conf
+!data/conf/proxy.json
+!data/conf/config.json
 data/logs/coraza/*
 !data/logs/coraza/empty
-data/logs/nginx/*
-!data/logs/nginx/empty
-# legacy path (pre-nginx migration)
-data/logs/openresty/*
 data/logs/gotestwaf/*
 !data/logs/gotestwaf/empty
+data/logs/proxy/*
+!data/logs/proxy/empty
 
 # examples
 examples/*/.env
@@ -54,7 +55,3 @@ examples/*/data/rules/crs/*
 !examples/*/data/rules/crs/.gitkeep
 examples/*/data/logs/coraza/*
 !examples/*/data/logs/coraza/empty
-examples/*/data/logs/nginx/*
-!examples/*/data/logs/nginx/empty
-# legacy path (pre-nginx migration)
-examples/*/data/logs/openresty/*

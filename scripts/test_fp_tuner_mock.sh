@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required" >&2
   exit 1
 fi
 
 API_BASE="${API_BASE:-http://localhost/mamotama-api}"
-API_KEY="${API_KEY:-${WAF_API_KEY_PRIMARY:-}}"
+API_KEY="${API_KEY:-}"
 TARGET_PATH="${TARGET_PATH:-rules/mamotama.conf}"
 SIMULATE="${SIMULATE:-1}"
 
@@ -17,6 +19,54 @@ cleanup() {
   rm -f "$REQ_FILE" "$RESP_FILE"
 }
 trap cleanup EXIT
+
+read_env_value() {
+  local env_file="$1"
+  local key="$2"
+  if [[ ! -f "${env_file}" ]]; then
+    return 0
+  fi
+  awk -F= -v key="${key}" '
+    $0 ~ "^[[:space:]]*" key "=" {
+      val = $0
+      sub("^[[:space:]]*" key "=", "", val)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+      if (val ~ /^".*"$/ || val ~ /^'\''.*'\''$/) {
+        val = substr(val, 2, length(val)-2)
+      }
+      print val
+      exit
+    }
+  ' "${env_file}"
+}
+
+resolve_host_config_path() {
+  local container_path="$1"
+  local normalized="${container_path#./}"
+  if [[ "${normalized}" == /* ]]; then
+    printf '%s\n' "${normalized}"
+    return 0
+  fi
+  if [[ "${normalized}" == data/* ]]; then
+    printf '%s/%s\n' "${ROOT_DIR}" "${normalized}"
+    return 0
+  fi
+  printf '%s/data/%s\n' "${ROOT_DIR}" "${normalized}"
+}
+
+if [[ -z "${API_KEY}" ]]; then
+  config_container_path="${WAF_CONFIG_FILE:-}"
+  if [[ -z "${config_container_path}" ]]; then
+    config_container_path="$(read_env_value "${ROOT_DIR}/.env" "WAF_CONFIG_FILE")"
+  fi
+  if [[ -z "${config_container_path}" ]]; then
+    config_container_path="conf/config.json"
+  fi
+  config_host_path="$(resolve_host_config_path "${config_container_path}")"
+  if [[ -f "${config_host_path}" ]]; then
+    API_KEY="$(jq -r '.admin.api_key_primary // empty' "${config_host_path}")"
+  fi
+fi
 
 cat >"$REQ_FILE" <<JSON
 {

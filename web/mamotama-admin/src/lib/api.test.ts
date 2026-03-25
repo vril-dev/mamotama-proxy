@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
-import { apiGetBinary, apiGetJson, apiPutJson } from "./api.js";
+import { apiGetBinary, apiGetJson, apiPutJson, getAPIKey, setAPIKey } from "./api.js";
 
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
     globalThis.fetch = originalFetch;
+    setAPIKey("");
 });
 
 test("apiGetJson uses default API base path", async () => {
@@ -52,6 +53,23 @@ test("apiPutJson sends JSON body and content type", async () => {
     assert.equal(method, "PUT");
     assert.equal(contentType, "application/json");
     assert.equal(body, JSON.stringify({ a: 1 }));
+});
+
+test("apiGetJson attaches X-API-Key when configured", async () => {
+    let sentAPIKey = "";
+    setAPIKey("test-api-key");
+    globalThis.fetch = async (_input, init) => {
+        sentAPIKey = new Headers(init?.headers).get("X-API-Key") || "";
+        return new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+        });
+    };
+
+    const out = await apiGetJson<{ ok: boolean }>("/status");
+    assert.equal(out.ok, true);
+    assert.equal(getAPIKey(), "test-api-key");
+    assert.equal(sentAPIKey, "test-api-key");
 });
 
 test("apiGetBinary decodes RFC5987 filename", async () => {

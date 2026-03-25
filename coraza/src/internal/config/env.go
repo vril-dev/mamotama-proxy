@@ -11,24 +11,37 @@ import (
 )
 
 var (
-	AppURL           string
-	RulesFile        string
-	BypassFile       string
-	CountryBlockFile string
-	RateLimitFile    string
-	BotDefenseFile   string
-	SemanticFile     string
-	LogFile          string
-	StrictOverride   bool
-	APIBasePath      string
-	APIKeyPrimary    string
-	APIKeySecondary  string
-	APIAuthDisable   bool
-	APICORSOrigins   []string
-	CRSEnable        bool
-	CRSSetupFile     string
-	CRSRulesDir      string
-	CRSDisabledFile  string
+	ConfigFile               string
+	ProxyConfigFile          string
+	UIBasePath               string
+	ProxyRollbackMax         int
+	ListenAddr               string
+	ServerReadTimeout        time.Duration
+	ServerReadHeaderTimeout  time.Duration
+	ServerWriteTimeout       time.Duration
+	ServerIdleTimeout        time.Duration
+	ServerMaxHeaderBytes     int
+	ServerMaxConcurrentReqs  int
+	ServerMaxConcurrentProxy int
+	RuntimeGOMAXPROCS        int
+	RuntimeMemoryLimitMB     int
+	RulesFile                string
+	BypassFile               string
+	CountryBlockFile         string
+	RateLimitFile            string
+	BotDefenseFile           string
+	SemanticFile             string
+	LogFile                  string
+	StrictOverride           bool
+	APIBasePath              string
+	APIKeyPrimary            string
+	APIKeySecondary          string
+	APIAuthDisable           bool
+	APICORSOrigins           []string
+	CRSEnable                bool
+	CRSSetupFile             string
+	CRSRulesDir              string
+	CRSDisabledFile          string
 
 	AllowInsecureDefaults bool
 
@@ -53,30 +66,68 @@ var (
 
 func LoadEnv() {
 	_ = godotenv.Load()
+	ConfigFile = strings.TrimSpace(os.Getenv("WAF_CONFIG_FILE"))
+	if ConfigFile == "" {
+		ConfigFile = "conf/config.json"
+	}
+	cfg, err := loadAppConfigFile(ConfigFile)
+	if err != nil {
+		log.Fatalf("[CONFIG][FATAL] load %s: %v", ConfigFile, err)
+	}
+	applyAppConfig(cfg)
+	enforceSecureDefaults()
+}
 
-	AppURL = os.Getenv("WAF_APP_URL")
-	RulesFile = os.Getenv("WAF_RULES_FILE")
-	BypassFile = os.Getenv("WAF_BYPASS_FILE")
-	CountryBlockFile = strings.TrimSpace(os.Getenv("WAF_COUNTRY_BLOCK_FILE"))
+func applyAppConfig(cfg appConfigFile) {
+	ProxyConfigFile = strings.TrimSpace(cfg.Paths.ProxyConfigFile)
+	if ProxyConfigFile == "" {
+		ProxyConfigFile = "conf/proxy.json"
+	}
+	UIBasePath = strings.TrimSpace(cfg.Admin.UIBasePath)
+	if UIBasePath == "" {
+		UIBasePath = "/mamotama-ui"
+	}
+
+	ProxyRollbackMax = parseProxyRollbackHistorySize(strconv.Itoa(cfg.Proxy.RollbackHistorySize))
+	ListenAddr = parseListenAddr(cfg.Server.ListenAddr)
+	ServerReadTimeout = time.Duration(parseServerTimeoutSec(strconv.Itoa(cfg.Server.ReadTimeoutSec), 30, false)) * time.Second
+	ServerReadHeaderTimeout = time.Duration(parseServerTimeoutSec(strconv.Itoa(cfg.Server.ReadHeaderTimeoutSec), 5, false)) * time.Second
+	ServerWriteTimeout = time.Duration(parseServerTimeoutSec(strconv.Itoa(cfg.Server.WriteTimeoutSec), 0, true)) * time.Second
+	ServerIdleTimeout = time.Duration(parseServerTimeoutSec(strconv.Itoa(cfg.Server.IdleTimeoutSec), 120, false)) * time.Second
+	ServerMaxHeaderBytes = parseServerMaxHeaderBytes(strconv.Itoa(cfg.Server.MaxHeaderBytes))
+	ServerMaxConcurrentReqs = parseServerConcurrency(strconv.Itoa(cfg.Server.MaxConcurrentRequests))
+	ServerMaxConcurrentProxy = parseServerConcurrency(strconv.Itoa(cfg.Server.MaxConcurrentProxyRequests))
+	RuntimeGOMAXPROCS = parseRuntimeGOMAXPROCS(strconv.Itoa(cfg.Runtime.GOMAXPROCS))
+	RuntimeMemoryLimitMB = parseRuntimeMemoryLimitMB(strconv.Itoa(cfg.Runtime.MemoryLimitMB))
+
+	RulesFile = strings.TrimSpace(cfg.Paths.RulesFile)
+	if RulesFile == "" {
+		RulesFile = "rules/mamotama.conf"
+	}
+	BypassFile = strings.TrimSpace(cfg.Paths.BypassFile)
+	if BypassFile == "" {
+		BypassFile = "conf/waf.bypass"
+	}
+	CountryBlockFile = strings.TrimSpace(cfg.Paths.CountryBlockFile)
 	if CountryBlockFile == "" {
 		CountryBlockFile = "conf/country-block.conf"
 	}
-	RateLimitFile = strings.TrimSpace(os.Getenv("WAF_RATE_LIMIT_FILE"))
+	RateLimitFile = strings.TrimSpace(cfg.Paths.RateLimitFile)
 	if RateLimitFile == "" {
 		RateLimitFile = "conf/rate-limit.conf"
 	}
-	BotDefenseFile = strings.TrimSpace(os.Getenv("WAF_BOT_DEFENSE_FILE"))
+	BotDefenseFile = strings.TrimSpace(cfg.Paths.BotDefenseFile)
 	if BotDefenseFile == "" {
 		BotDefenseFile = "conf/bot-defense.conf"
 	}
-	SemanticFile = strings.TrimSpace(os.Getenv("WAF_SEMANTIC_FILE"))
+	SemanticFile = strings.TrimSpace(cfg.Paths.SemanticFile)
 	if SemanticFile == "" {
 		SemanticFile = "conf/semantic.conf"
 	}
-	LogFile = os.Getenv("WAF_LOG_FILE")
-	StrictOverride = os.Getenv("WAF_STRICT_OVERRIDE") == "true"
+	LogFile = strings.TrimSpace(cfg.Paths.LogFile)
 
-	APIBasePath = os.Getenv("WAF_API_BASEPATH")
+	StrictOverride = cfg.Admin.StrictOverride
+	APIBasePath = strings.TrimSpace(cfg.Admin.APIBasePath)
 	if APIBasePath == "" {
 		APIBasePath = "/mamotama-api"
 	}
@@ -84,91 +135,95 @@ func LoadEnv() {
 		APIBasePath = "/" + APIBasePath
 	}
 	if APIBasePath == "/" {
-		log.Fatal("WAF_API_BASEPATH cannot be root path '/'")
+		log.Fatal("api_base_path cannot be root path '/'")
+	}
+	APIKeyPrimary = strings.TrimSpace(cfg.Admin.APIKeyPrimary)
+	APIKeySecondary = strings.TrimSpace(cfg.Admin.APIKeySecondary)
+	APIAuthDisable = cfg.Admin.APIAuthDisable
+	APICORSOrigins = make([]string, 0, len(cfg.Admin.CORSAllowedOrigins))
+	for _, origin := range cfg.Admin.CORSAllowedOrigins {
+		origin = strings.TrimSpace(origin)
+		if origin != "" {
+			APICORSOrigins = append(APICORSOrigins, origin)
+		}
 	}
 
-	APIKeyPrimary = strings.TrimSpace(os.Getenv("WAF_API_KEY_PRIMARY"))
-	APIKeySecondary = strings.TrimSpace(os.Getenv("WAF_API_KEY_SECONDARY"))
-	APIAuthDisable = isTruthy(os.Getenv("WAF_API_AUTH_DISABLE"))
-	APICORSOrigins = parseCSV(os.Getenv("WAF_API_CORS_ALLOWED_ORIGINS"))
-
-	CRSEnable = !isFalsy(os.Getenv("WAF_CRS_ENABLE"))
-	CRSSetupFile = strings.TrimSpace(os.Getenv("WAF_CRS_SETUP_FILE"))
+	CRSEnable = cfg.CRS.Enable
+	CRSSetupFile = strings.TrimSpace(cfg.Paths.CRSSetupFile)
 	if CRSSetupFile == "" {
 		CRSSetupFile = "rules/crs/crs-setup.conf"
 	}
-	CRSRulesDir = strings.TrimSpace(os.Getenv("WAF_CRS_RULES_DIR"))
+	CRSRulesDir = strings.TrimSpace(cfg.Paths.CRSRulesDir)
 	if CRSRulesDir == "" {
 		CRSRulesDir = "rules/crs/rules"
 	}
-	CRSDisabledFile = strings.TrimSpace(os.Getenv("WAF_CRS_DISABLED_FILE"))
+	CRSDisabledFile = strings.TrimSpace(cfg.Paths.CRSDisabledFile)
 	if CRSDisabledFile == "" {
 		CRSDisabledFile = "conf/crs-disabled.conf"
 	}
 
-	FPTunerMode = strings.ToLower(strings.TrimSpace(os.Getenv("WAF_FP_TUNER_MODE")))
+	FPTunerMode = strings.ToLower(strings.TrimSpace(cfg.FPTuner.Mode))
 	if FPTunerMode == "" {
 		FPTunerMode = "mock"
 	}
-	FPTunerEndpoint = strings.TrimSpace(os.Getenv("WAF_FP_TUNER_ENDPOINT"))
-	FPTunerAPIKey = strings.TrimSpace(os.Getenv("WAF_FP_TUNER_API_KEY"))
-	FPTunerModel = strings.TrimSpace(os.Getenv("WAF_FP_TUNER_MODEL"))
-	FPTunerMockResponseFile = strings.TrimSpace(os.Getenv("WAF_FP_TUNER_MOCK_RESPONSE_FILE"))
+	FPTunerEndpoint = strings.TrimSpace(cfg.FPTuner.Endpoint)
+	FPTunerAPIKey = strings.TrimSpace(cfg.FPTuner.APIKey)
+	FPTunerModel = strings.TrimSpace(cfg.FPTuner.Model)
+	FPTunerMockResponseFile = strings.TrimSpace(cfg.FPTuner.MockResponseFile)
 	if FPTunerMockResponseFile == "" {
 		FPTunerMockResponseFile = "conf/fp-tuner-mock-response.json"
 	}
-	timeoutSec := parseIntDefault(os.Getenv("WAF_FP_TUNER_TIMEOUT_SEC"), 15)
+	timeoutSec := cfg.FPTuner.TimeoutSec
 	if timeoutSec < 1 || timeoutSec > 300 {
 		timeoutSec = 15
 	}
 	FPTunerTimeout = time.Duration(timeoutSec) * time.Second
-	FPTunerRequireApproval = !isFalsy(os.Getenv("WAF_FP_TUNER_REQUIRE_APPROVAL"))
-	approvalTTLSec := parseIntDefault(os.Getenv("WAF_FP_TUNER_APPROVAL_TTL_SEC"), 600)
+	FPTunerRequireApproval = cfg.FPTuner.RequireApproval
+	approvalTTLSec := cfg.FPTuner.ApprovalTTLSec
 	if approvalTTLSec < 10 || approvalTTLSec > 86400 {
 		approvalTTLSec = 600
 	}
 	FPTunerApprovalTTL = time.Duration(approvalTTLSec) * time.Second
-	FPTunerAuditFile = strings.TrimSpace(os.Getenv("WAF_FP_TUNER_AUDIT_FILE"))
+	FPTunerAuditFile = strings.TrimSpace(cfg.FPTuner.AuditFile)
 	if FPTunerAuditFile == "" {
 		FPTunerAuditFile = "logs/coraza/fp-tuner-audit.ndjson"
 	}
-	legacyDBEnabled := isTruthy(os.Getenv("WAF_DB_ENABLED"))
-	StorageBackend = parseStorageBackend(os.Getenv("WAF_STORAGE_BACKEND"), legacyDBEnabled)
+
+	StorageBackend = parseStorageBackend(cfg.Storage.Backend, false)
 	DBEnabled = StorageBackend == "db"
-	DBDriver = parseDBDriver(os.Getenv("WAF_DB_DRIVER"))
-	DBDSN = strings.TrimSpace(os.Getenv("WAF_DB_DSN"))
-	DBPath = strings.TrimSpace(os.Getenv("WAF_DB_PATH"))
+	DBDriver = parseDBDriver(cfg.Storage.DBDriver)
+	DBDSN = strings.TrimSpace(cfg.Storage.DBDSN)
+	DBPath = strings.TrimSpace(cfg.Storage.DBPath)
 	if DBPath == "" {
 		DBPath = "logs/coraza/mamotama.db"
 	}
-	DBRetentionDays = parseIntDefault(os.Getenv("WAF_DB_RETENTION_DAYS"), 30)
+	DBRetentionDays = cfg.Storage.DBRetentionDays
 	if DBRetentionDays < 0 {
 		DBRetentionDays = 0
 	}
 	if DBRetentionDays > 3650 {
 		DBRetentionDays = 3650
 	}
-	dbSyncSec := parseDBSyncIntervalSec(os.Getenv("WAF_DB_SYNC_INTERVAL_SEC"))
+	dbSyncSec := parseDBSyncIntervalSec(strconv.Itoa(cfg.Storage.DBSyncIntervalSec))
 	DBSyncInterval = time.Duration(dbSyncSec) * time.Second
 
-	AllowInsecureDefaults = isTruthy(os.Getenv("WAF_ALLOW_INSECURE_DEFAULTS"))
-	enforceSecureDefaults()
+	AllowInsecureDefaults = cfg.Admin.AllowInsecureDefaults
 }
 
 func enforceSecureDefaults() {
 	if AllowInsecureDefaults {
-		log.Println("[SECURITY][WARN] WAF_ALLOW_INSECURE_DEFAULTS enabled; weak bootstrap settings are allowed")
+		log.Println("[SECURITY][WARN] admin.allow_insecure_defaults enabled; weak bootstrap settings are allowed")
 		return
 	}
 
 	if APIAuthDisable {
-		log.Fatal("[SECURITY] WAF_API_AUTH_DISABLE is enabled; set WAF_ALLOW_INSECURE_DEFAULTS=1 only for local testing")
+		log.Fatal("[SECURITY] admin.api_auth_disable is enabled; set admin.allow_insecure_defaults=true only for local testing")
 	}
 	if isWeakAPIKey(APIKeyPrimary) {
-		log.Fatal("[SECURITY] WAF_API_KEY_PRIMARY is weak; set a random key with 16+ chars")
+		log.Fatal("[SECURITY] admin.api_key_primary is weak; set a random key with 16+ chars")
 	}
 	if APIKeySecondary != "" && isWeakAPIKey(APIKeySecondary) {
-		log.Fatal("[SECURITY] WAF_API_KEY_SECONDARY is weak; set a random key with 16+ chars or leave it empty")
+		log.Fatal("[SECURITY] admin.api_key_secondary is weak; set a random key with 16+ chars or leave it empty")
 	}
 }
 
@@ -246,7 +301,7 @@ func parseStorageBackend(v string, legacyDBEnabled bool) string {
 		}
 		return "file"
 	default:
-		log.Printf("[CONFIG][WARN] unsupported WAF_STORAGE_BACKEND=%q, fallback=file", s)
+		log.Printf("[CONFIG][WARN] unsupported storage.backend=%q, fallback=file", s)
 		return "file"
 	}
 }
@@ -259,7 +314,7 @@ func parseDBDriver(v string) string {
 	case "sqlite", "mysql":
 		return s
 	default:
-		log.Printf("[CONFIG][WARN] unsupported WAF_DB_DRIVER=%q, fallback=sqlite", s)
+		log.Printf("[CONFIG][WARN] unsupported storage.db_driver=%q, fallback=sqlite", s)
 		return "sqlite"
 	}
 }
@@ -271,6 +326,89 @@ func parseDBSyncIntervalSec(v string) int {
 	}
 	if n > 3600 {
 		return 3600
+	}
+	return n
+}
+
+func parseListenAddr(v string) string {
+	s := strings.TrimSpace(v)
+	if s == "" {
+		return ":9090"
+	}
+	if strings.HasPrefix(s, ":") {
+		return s
+	}
+	if _, err := strconv.Atoi(s); err == nil {
+		return ":" + s
+	}
+	return s
+}
+
+func parseProxyRollbackHistorySize(v string) int {
+	n := parseIntDefault(v, 8)
+	if n < 1 {
+		return 1
+	}
+	if n > 64 {
+		return 64
+	}
+	return n
+}
+
+func parseServerTimeoutSec(v string, def int, allowZero bool) int {
+	n := parseIntDefault(v, def)
+	if n < 0 {
+		return def
+	}
+	if n == 0 && !allowZero {
+		return def
+	}
+	if n > 3600 {
+		return 3600
+	}
+	return n
+}
+
+func parseServerMaxHeaderBytes(v string) int {
+	n := parseIntDefault(v, 1<<20)
+	if n < 1024 {
+		return 1024
+	}
+	if n > 16<<20 {
+		return 16 << 20
+	}
+	return n
+}
+
+func parseServerConcurrency(v string) int {
+	n := parseIntDefault(v, 0)
+	if n < 0 {
+		return 0
+	}
+	if n > 200000 {
+		return 200000
+	}
+	return n
+}
+
+func parseRuntimeGOMAXPROCS(v string) int {
+	n := parseIntDefault(v, 0)
+	if n < 0 {
+		return 0
+	}
+	if n > 4096 {
+		return 4096
+	}
+	return n
+}
+
+func parseRuntimeMemoryLimitMB(v string) int {
+	n := parseIntDefault(v, 0)
+	if n < 0 {
+		return 0
+	}
+	if n > 1024*1024 {
+		return 1024 * 1024
 	}
 	return n
 }

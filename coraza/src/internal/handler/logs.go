@@ -18,17 +18,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"mamotama/internal/config"
 )
 
 var (
-	logDirCoraza          = "logs/coraza"
-	logDirNginx           = "logs/nginx"
-	logDirOpenrestyLegacy = "logs/openresty"
+	logDirCoraza = "logs/coraza"
 
 	logFiles = map[string]string{
-		"waf":    filepath.Join(logDirCoraza, "waf-events.ndjson"),
-		"accerr": filepath.Join(logDirNginx, "access-error.ndjson"),
-		"intr":   filepath.Join(logDirNginx, "interesting.ndjson"),
+		"waf": filepath.Join(logDirCoraza, "waf-events.ndjson"),
 	}
 
 	readChunkSize   = int64(64 * 1024)
@@ -470,15 +468,17 @@ func buildHourlySeries(start, end time.Time, counts map[int64]int) []statsSeries
 }
 
 func resolveLogPath(src, current string) string {
-	if src == "waf" || current == "" {
+	if src == "waf" {
+		if p := strings.TrimSpace(config.LogFile); p != "" {
+			return p
+		}
+		return current
+	}
+	if current == "" {
 		return current
 	}
 	if _, err := os.Stat(current); err == nil {
 		return current
-	}
-	legacy := strings.Replace(current, logDirNginx+"/", logDirOpenrestyLegacy+"/", 1)
-	if _, err := os.Stat(legacy); err == nil {
-		return legacy
 	}
 	return current
 }

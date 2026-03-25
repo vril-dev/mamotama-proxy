@@ -1,7 +1,11 @@
 package main
 
 import (
+	"errors"
 	"log"
+	"net/http"
+	"runtime"
+	"runtime/debug"
 	"strings"
 
 	"github.com/gin-contrib/cors"
@@ -16,6 +20,18 @@ import (
 
 func main() {
 	config.LoadEnv()
+	if config.RuntimeGOMAXPROCS > 0 {
+		prev := runtime.GOMAXPROCS(config.RuntimeGOMAXPROCS)
+		log.Printf("[RUNTIME] GOMAXPROCS set to %d (previous=%d)", config.RuntimeGOMAXPROCS, prev)
+	}
+	if config.RuntimeMemoryLimitMB > 0 {
+		limitBytes := int64(config.RuntimeMemoryLimitMB) * 1024 * 1024
+		prev := debug.SetMemoryLimit(limitBytes)
+		log.Printf("[RUNTIME] memory limit set to %d MB (previous=%d MB)", config.RuntimeMemoryLimitMB, prev/(1024*1024))
+	}
+	if err := handler.InitProxyRuntime(config.ProxyConfigFile, config.ProxyRollbackMax); err != nil {
+		log.Fatalf("[FATAL] failed to initialize proxy runtime: %v", err)
+	}
 	if err := handler.InitLogsStatsStoreWithBackend(
 		config.StorageBackend,
 		config.DBDriver,
@@ -28,6 +44,9 @@ func main() {
 		log.Printf("[DB][INIT] db store enabled (backend=%s driver=%s path=%s retention_days=%d)", config.StorageBackend, config.DBDriver, config.DBPath, config.DBRetentionDays)
 	} else {
 		log.Printf("[DB][INIT] storage backend=%s", config.StorageBackend)
+	}
+	if err := handler.SyncProxyStorage(); err != nil {
+		log.Printf("[PROXY][DB][WARN] sync failed (fallback=file): %v", err)
 	}
 	if err := handler.SyncRuleFilesStorage(); err != nil {
 		log.Printf("[RULES][DB][WARN] sync failed (fallback=file): %v", err)
@@ -72,7 +91,8 @@ func main() {
 		log.Printf("[SEMANTIC][INIT] loaded")
 	}
 
-	log.Println("[INFO] WAF upstream target:", config.AppURL)
+	_, _, proxyCfg, _, _ := handler.ProxyRulesSnapshot()
+	log.Println("[INFO] WAF upstream target:", proxyCfg.UpstreamURL)
 
 	r := gin.Default()
 
@@ -86,11 +106,20 @@ func main() {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
+	if config.ServerMaxConcurrentReqs > 0 {
+		r.Use(middleware.ConcurrencyLimit(config.ServerMaxConcurrentReqs, "global"))
+		log.Printf("[SERVER] global concurrency guard enabled max=%d", config.ServerMaxConcurrentReqs)
+	}
+	proxyConcurrencyGuard := middleware.NewConcurrencyGuard(config.ServerMaxConcurrentProxy, "proxy")
+	if proxyConcurrencyGuard != nil {
+		log.Printf("[SERVER] proxy concurrency guard enabled max=%d", config.ServerMaxConcurrentProxy)
+	}
+
 	if len(config.APICORSOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
 			AllowOrigins: config.APICORSOrigins,
 			AllowMethods: []string{"GET", "POST", "PUT", "OPTIONS"},
-			AllowHeaders: []string{"Origin", "Content-Type", "Accept", "X-API-Key"},
+			AllowHeaders: []string{"Origin", "Content-Type", "Accept", "X-API-Key", "If-Match"},
 		}))
 		log.Printf("[SECURITY] CORS enabled for origins: %s", strings.Join(config.APICORSOrigins, ","))
 	} else {
@@ -113,6 +142,10 @@ func main() {
 					config.APIBasePath + "/rate-limit-rules",
 					config.APIBasePath + "/bot-defense-rules",
 					config.APIBasePath + "/semantic-rules",
+					config.APIBasePath + "/proxy-rules",
+					config.APIBasePath + "/proxy-rules:validate",
+					config.APIBasePath + "/proxy-rules:probe",
+					config.APIBasePath + "/proxy-rules:rollback",
 					config.APIBasePath + "/fp-tuner/propose",
 					config.APIBasePath + "/fp-tuner/apply",
 					config.APIBasePath + "/logs/read",
@@ -150,15 +183,27 @@ func main() {
 		api.GET("/semantic-rules", handler.GetSemanticRules)
 		api.POST("/semantic-rules:validate", handler.ValidateSemanticRules)
 		api.PUT("/semantic-rules", handler.PutSemanticRules)
+		api.GET("/proxy-rules", handler.GetProxyRules)
+		api.POST("/proxy-rules:action", handler.ProxyRulesAction)
+		api.PUT("/proxy-rules", handler.PutProxyRules)
 		api.POST("/fp-tuner/propose", handler.ProposeFPTuning)
 		api.POST("/fp-tuner/apply", handler.ApplyFPTuning)
 	}
+
+	handler.RegisterAdminUIRoutes(r)
 
 	r.NoRoute(func(c *gin.Context) {
 		p := c.Request.URL.Path
 		if strings.HasPrefix(p, config.APIBasePath) {
 			c.AbortWithStatus(404)
 			return
+		}
+		if proxyConcurrencyGuard != nil && !proxyConcurrencyGuard.Acquire() {
+			proxyConcurrencyGuard.Reject(c)
+			return
+		}
+		if proxyConcurrencyGuard != nil {
+			defer proxyConcurrencyGuard.Release()
 		}
 
 		handler.ProxyHandler(c)
@@ -181,5 +226,25 @@ func main() {
 		defer stopWatch()
 	}
 
-	r.Run(":9090")
+	srv := &http.Server{
+		Addr:              config.ListenAddr,
+		Handler:           r,
+		ReadTimeout:       config.ServerReadTimeout,
+		ReadHeaderTimeout: config.ServerReadHeaderTimeout,
+		WriteTimeout:      config.ServerWriteTimeout,
+		IdleTimeout:       config.ServerIdleTimeout,
+		MaxHeaderBytes:    config.ServerMaxHeaderBytes,
+	}
+
+	log.Printf("[INFO] starting server on %s", config.ListenAddr)
+	log.Printf("[SERVER] read_timeout=%s read_header_timeout=%s write_timeout=%s idle_timeout=%s max_header_bytes=%d",
+		config.ServerReadTimeout,
+		config.ServerReadHeaderTimeout,
+		config.ServerWriteTimeout,
+		config.ServerIdleTimeout,
+		config.ServerMaxHeaderBytes,
+	)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("[FATAL] server stopped: %v", err)
+	}
 }

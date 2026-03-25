@@ -11,10 +11,11 @@ import RateLimitPanel from './pages/RateLimitPanel';
 import BotDefensePanel from './pages/BotDefensePanel';
 import SemanticPanel from './pages/SemanticPanel';
 import FPTunerPanel from './pages/FPTunerPanel';
+import ProxyRulesPanel from './pages/ProxyRulesPanel';
 
 function App() {
   return (
-    <BrowserRouter basename={import.meta.env.VITE_APP_BASE_PATH}>
+    <BrowserRouter basename="/mamotama-ui">
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/status" />} />
@@ -29,6 +30,7 @@ function App() {
           <Route path="semantic" element={<SemanticPanel />} />
           <Route path="fp-tuner" element={<FPTunerPanel />} />
           <Route path="cache" element={<CacheRulePanel />} />
+          <Route path="proxy-rules" element={<ProxyRulesPanel />} />
         </Route>
       </Routes>
     </BrowserRouter>
