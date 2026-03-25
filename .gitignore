@@ -40,10 +40,6 @@ data/conf
 !data/conf/proxy.json
 data/logs/coraza/*
 !data/logs/coraza/empty
-data/logs/nginx/*
-!data/logs/nginx/empty
-# legacy path (pre-nginx migration)
-data/logs/openresty/*
 data/logs/gotestwaf/*
 !data/logs/gotestwaf/empty
 
@@ -55,7 +51,3 @@ examples/*/data/rules/crs/*
 !examples/*/data/rules/crs/.gitkeep
 examples/*/data/logs/coraza/*
 !examples/*/data/logs/coraza/empty
-examples/*/data/logs/nginx/*
-!examples/*/data/logs/nginx/empty
-# legacy path (pre-nginx migration)
-examples/*/data/logs/openresty/*

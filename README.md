@@ -170,14 +170,6 @@ docker compose up -d coraza
 Open the embedded admin UI at `http://localhost:${CORAZA_PORT:-9090}/mamotama-ui`.
 Set API key in UI header (`X-API-Key`) and operate via `/mamotama-api/*`.
 
-#### Optional: Legacy Log Directory Migration
-
-If you are upgrading from older versions, run this once to merge legacy `*.ndjson` files under `data/logs/` into `data/logs/proxy/`:
-
-```bash
-./scripts/migrate_proxy_logs.sh
-```
-
 #### Optional: Legacy Proxy Env Migration (`WAF_APP_URL` -> `conf/proxy.json`)
 
 If you are migrating from older env-based proxy config, generate and validate `proxy.json` with:
@@ -371,7 +363,7 @@ This keeps external provider payload small by sending one selected event at a ti
 | GET | `/mamotama-api/status` | Get current WAF status/config |
 | GET | `/mamotama-api/logs/read` | Read WAF logs (`tail`) with optional country filter via `country` query |
 | GET | `/mamotama-api/logs/stats` | Return WAF block summary + hourly series (`hours`, `scan` query supported) |
-| GET | `/mamotama-api/logs/download` | Download log files (`waf` / `accerr` / `intr`) as ZIP |
+| GET | `/mamotama-api/logs/download` | Download WAF log file (`waf`) |
 | GET | `/mamotama-api/rules` | Get active rule files (multi-file aware) |
 | POST | `/mamotama-api/rules:validate` | Validate rule syntax (no save) |
 | PUT | `/mamotama-api/rules` | Save rule file and hot-reload base WAF (`If-Match` supported) |
@@ -547,7 +539,7 @@ curl -s -H "X-API-Key: <your-api-key>" \
      "http://<host>/mamotama-api/logs/read?src=waf&tail=100&country=JP" | jq .
 ```
 
-- `src`: log type (`waf`, `accerr`, `intr`)
+- `src`: log type (`waf`)
 - `tail`: number of lines
 - `country`: country code filter (`JP`, `US`, `UNKNOWN`). Omit or set `ALL` for all records.
   - Under Cloudflare, `CF-IPCountry` header is used. If unavailable, `UNKNOWN` is used.

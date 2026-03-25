@@ -171,14 +171,6 @@ docker compose up -d coraza
 起動後、管理UIは `http://localhost:${CORAZA_PORT:-9090}/mamotama-ui` で開けます。  
 UIヘッダの API キー入力欄に `WAF_API_KEY_PRIMARY` を設定して利用してください。
 
-#### 任意: 旧ログディレクトリの移行
-
-旧バージョンから更新する場合は、`data/logs/` 配下のレガシー `*.ndjson` を `data/logs/proxy/` に統合するため、初回のみ以下を実行してください。
-
-```bash
-./scripts/migrate_proxy_logs.sh
-```
-
 #### 任意: 旧Proxy環境変数からの移行（`WAF_APP_URL` -> `conf/proxy.json`）
 
 旧来の env 起点設定から移行する場合は、以下で `proxy.json` を生成・検証できます。
@@ -372,7 +364,7 @@ Claudeコマンドプロバイダのローカルモックテスト:
 | GET | `/mamotama-api/status` | 現在のWAF設定状態を取得 |
 | GET | `/mamotama-api/logs/read` | WAFログ（tail）を取得（`country` クエリで国別フィルタ可） |
 | GET | `/mamotama-api/logs/stats` | WAFブロック統計 + 時間別seriesを取得（`hours` / `scan` クエリ対応） |
-| GET | `/mamotama-api/logs/download` | 3種類のログファイル（`waf` / `accerr` / `intr`）をZIPでまとめてダウンロード |
+| GET | `/mamotama-api/logs/download` | WAFログファイル（`waf`）をダウンロード |
 | GET | `/mamotama-api/rules` | ルールファイル一覧を取得（複数対応） |
 | POST | `/mamotama-api/rules:validate` | 指定ルールファイルの構文検証（保存なし） |
 | PUT | `/mamotama-api/rules` | 指定ルールファイルを保存し、WAFベースルールをホットリロード（`If-Match`対応） |
@@ -551,7 +543,7 @@ curl -s -H "X-API-Key: <your-api-key>" \
      "http://<host>/mamotama-api/logs/read?src=waf&tail=100&country=JP" | jq .
 ```
 
-* src: ログ種別 (waf, accerr, intr)
+* src: ログ種別 (waf)
 * tail: 取得件数
 * country: 国コード（例: `JP`, `US`, `UNKNOWN`。未指定または`ALL`で全件）
   * Cloudflare配下では `CF-IPCountry` ヘッダを利用します。未取得時は `UNKNOWN` になります。

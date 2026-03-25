@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGetJson, apiGetBinary } from "@/lib/api";
 
-type LogSource = "waf" | "accerr" | "intr";
+type LogSource = "waf";
 
 type LogLine = {
     ts?: string;
@@ -27,8 +27,6 @@ type ReadResponse = {
 
 const SRC_TO_PARAM: Record<LogSource, string> = {
     waf: "waf",
-    accerr: "accerr",
-    intr: "intr",
 };
 
 async function readLogs(params: {
@@ -235,8 +233,8 @@ export default function Logs() {
         };
     }, []);
 
-    async function downloadAll() {
-        const sources: LogSource[] = ["waf", "accerr", "intr"];
+async function downloadAll() {
+        const sources: LogSource[] = ["waf"];
         const country = normalizeCountryFilterValue(countryFilter);
         for (const s of sources) {
             const path = buildDownloadPath(s, country);
@@ -260,7 +258,7 @@ export default function Logs() {
 
             <div className="flex flex-wrap items-center gap-2">
                 <div className="inline-flex rounded-lg border overflow-hidden">
-                {(["waf", "accerr", "intr"] as LogSource[]).map((s) => (
+                {(["waf"] as LogSource[]).map((s) => (
                     <button
                         key={s}
                         onClick={() => {
@@ -272,7 +270,7 @@ export default function Logs() {
                             src === s ? "bg-black text-white" : "bg-white"
                         )}
                     >
-                        {s === "waf" ? "waf-events" : s === "accerr" ? "access-error" : "interesting"}
+                        {s === "waf" ? "waf-events" : s}
                     </button>
                 ))}
                 </div>
