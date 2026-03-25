@@ -163,13 +163,24 @@ Coraza + CRS WAFプロジェクト
 ### 起動方法
 
 ```bash
-./scripts/install_crs.sh
-docker compose build coraza
-docker compose up -d coraza
+make setup
+make ui-build-sync
+make compose-up
 ```
 
 起動後、管理UIは `http://localhost:${CORAZA_PORT:-9090}/mamotama-ui` で開けます。  
 UIヘッダの API キー入力欄に `WAF_API_KEY_PRIMARY` を設定して利用してください。
+
+### Makeショートカット
+
+```bash
+make help
+make build          # 一発: web build + 埋め込み同期 + Goバイナリ生成
+make check          # go-test + ui-test + compose設定検証
+make smoke          # 埋め込みUI + proxy-rules スモーク
+make ci-local       # ローカルCI基準（check + smoke）
+make compose-down
+```
 
 #### 任意: 旧Proxy環境変数からの移行（`WAF_APP_URL` -> `conf/proxy.json`）
 
@@ -628,6 +639,12 @@ GitHub Actions の `ci` ワークフローで以下を検証します。
 - `ci / compose-validate`
 - `ci / waf-test (file)`
 - `ci / waf-test (sqlite)`
+
+ローカルで push 前に同等確認する場合:
+
+```bash
+make ci-local
+```
 
 ---
 

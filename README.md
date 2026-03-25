@@ -162,13 +162,24 @@ You can still edit source under `web/mamotama-admin/` and rebuild assets for emb
 ### Startup
 
 ```bash
-./scripts/install_crs.sh
-docker compose build coraza
-docker compose up -d coraza
+make setup
+make ui-build-sync
+make compose-up
 ```
 
 Open the embedded admin UI at `http://localhost:${CORAZA_PORT:-9090}/mamotama-ui`.
 Set API key in UI header (`X-API-Key`) and operate via `/mamotama-api/*`.
+
+### Make Shortcuts
+
+```bash
+make help
+make build          # one-shot: web build + embed sync + go binary
+make check          # go-test + ui-test + compose config checks
+make smoke          # embedded UI + proxy-rules smoke checks
+make ci-local       # local CI baseline (check + smoke)
+make compose-down
+```
 
 #### Optional: Legacy Proxy Env Migration (`WAF_APP_URL` -> `conf/proxy.json`)
 
@@ -626,6 +637,12 @@ In production workflows, set these as required branch protection checks:
 - `ci / compose-validate`
 - `ci / waf-test (file)`
 - `ci / waf-test (sqlite)`
+
+For local pre-push verification, use:
+
+```bash
+make ci-local
+```
 
 ---
 
