@@ -113,7 +113,7 @@ func InitLogsStatsStoreWithBackend(storageBackend, dbDriver, dbPath, dbDSN strin
 		}
 	case logStatsDBDriverMySQL:
 		if strings.TrimSpace(dbDSN) == "" {
-			return fmt.Errorf("mysql driver requires WAF_DB_DSN")
+			return fmt.Errorf("mysql driver requires storage.db_dsn")
 		}
 		store, err = openWAFEventStoreMySQL(dbDSN, retentionDays)
 		if err != nil {

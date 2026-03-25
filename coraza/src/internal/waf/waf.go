@@ -77,10 +77,10 @@ func buildWAF(files []string) (coraza.WAF, error) {
 
 func discoverCRSRuleFiles(setupFile, rulesDir string) ([]string, error) {
 	if setupFile == "" {
-		return nil, errors.New("WAF_CRS_SETUP_FILE is empty")
+		return nil, errors.New("paths.crs_setup_file is empty")
 	}
 	if rulesDir == "" {
-		return nil, errors.New("WAF_CRS_RULES_DIR is empty")
+		return nil, errors.New("paths.crs_rules_dir is empty")
 	}
 	if _, err := os.Stat(setupFile); err != nil {
 		return nil, fmt.Errorf("CRS setup file not found: %s: %w", setupFile, err)

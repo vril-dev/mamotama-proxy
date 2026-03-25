@@ -37,7 +37,7 @@ Edit `data/rules/crs/crs-setup.conf` as needed (for example, paranoia level and 
 
 ## Environment Variables
 
-You can control behavior via `.env`.
+Use `.env` only for Docker runtime wiring.
 
 ### Docker / Local MySQL (Optional)
 
@@ -50,71 +50,45 @@ You can control behavior via `.env`.
 | `MYSQL_ROOT_PASSWORD` | `mamotama-root` | Root password for local MySQL container. |
 | `MYSQL_TZ` | `UTC` | Container timezone. |
 
-### Nginx
+### Coraza App Config (`data/conf/config.json`)
+
+Runtime configuration is now centralized in JSON (`edge` style).
+
+- Docker keeps only runtime/environment wiring in `.env` (UID/GID, host ports, mysql profile vars, config path).
+- Coraza app behavior (server/admin/security/storage/fp-tuner/paths) is controlled by `data/conf/config.json`.
+- `data/conf/proxy.json` remains the dedicated live-updated proxy transport config.
+
+Main blocks in `config.json`:
+
+| Block | Purpose |
+| --- | --- |
+| `server` | listen address, timeout values, max header size, concurrency caps |
+| `runtime` | Go runtime caps (`gomaxprocs`, `memory_limit_mb`) |
+| `admin` | API/UI base paths, API keys, CORS, strict/insecure toggles |
+| `paths` | file locations for rules/bypass/country/rate/bot/semantic/CRS/proxy |
+| `proxy` | rollback history size for `/proxy-rules:rollback` |
+| `crs` | CRS enable flag |
+| `fp_tuner` | provider mode/endpoint/auth/timeout/approval/audit settings |
+| `storage` | backend (`file|db`), DB driver/path/dsn/retention/sync interval |
+
+Container startup uses only:
 
 | Variable | Example | Description |
 | --- | --- | --- |
-| `NGX_CORAZA_UPSTREAM` | `server coraza:9090;` | Upstream definition for Coraza (Go server). You can list multiple `server host:port;` lines for simple load balancing. |
-| `NGX_BACKEND_RESPONSE_TIMEOUT` | `60s` | Upstream response timeout from Coraza. Applied to `proxy_read_timeout`. |
-| `NGX_CORAZA_ADMIN_URL` | `/mamotama-admin/` | Public path for admin UI. Trailing slash required. Requests under this path are proxied to frontend (`web:5173`). |
-| `NGX_CORAZA_API_BASEPATH` | `/mamotama-api/` | Base path for admin API. Trailing slash recommended. This path is always non-cacheable on nginx side. |
+| `WAF_CONFIG_FILE` | `conf/config.json` | App config JSON path loaded at startup. |
+| `WAF_LISTEN_PORT` | `9090` | Compose port/healthcheck/gotestwaf target helper. Keep aligned with `server.listen_addr` in config JSON. |
 
-### WAF / Go (Coraza Wrapper)
+### Admin UI
 
-| Variable | Example | Description |
-| --- | --- | --- |
-| `WAF_APP_URL` | `http://host.docker.internal:3000` | Upstream application URL (change appropriately for production such as ALB/ECS). |
-| `WAF_LOG_FILE` | (empty) | WAF log output destination. If empty, stdout is used. |
-| `WAF_BYPASS_FILE` | `conf/waf.bypass` | Path for bypass/special-rule definition file. |
-| `WAF_BOT_DEFENSE_FILE` | `conf/bot-defense.conf` | Bot-defense challenge settings file (JSON), editable from admin UI. |
-| `WAF_SEMANTIC_FILE` | `conf/semantic.conf` | Semantic heuristic scoring settings file (JSON), editable from admin UI. |
-| `WAF_COUNTRY_BLOCK_FILE` | `conf/country-block.conf` | Country block definition file (one country code per line, e.g. `JP`, `US`, `UNKNOWN`). |
-| `WAF_RATE_LIMIT_FILE` | `conf/rate-limit.conf` | Rate-limit definition file (JSON), editable from admin UI. |
-| `WAF_RULES_FILE` | `rules/mamotama.conf` | Active base rule file(s). Comma-separated multiple files are supported. |
-| `WAF_CRS_ENABLE` | `true` | Whether to load CRS. If `false`, only base rules are used. |
-| `WAF_CRS_SETUP_FILE` | `rules/crs/crs-setup.conf` | CRS setup file path. |
-| `WAF_CRS_RULES_DIR` | `rules/crs/rules` | Directory for CRS core rules (`*.conf`). |
-| `WAF_CRS_DISABLED_FILE` | `conf/crs-disabled.conf` | Disabled CRS core rule list file (one filename per line). |
-| `WAF_FP_TUNER_MODE` | `mock` | FP tuner provider mode. `mock` reads fixture or generated suggestion, `http` posts to `WAF_FP_TUNER_ENDPOINT`. |
-| `WAF_FP_TUNER_ENDPOINT` | (empty) | HTTP endpoint for external LLM proxy in `http` mode. |
-| `WAF_FP_TUNER_API_KEY` | (empty) | Bearer token for `WAF_FP_TUNER_ENDPOINT`. |
-| `WAF_FP_TUNER_MODEL` | (empty) | Optional model label passed to provider payload. |
-| `WAF_FP_TUNER_TIMEOUT_SEC` | `15` | HTTP timeout (seconds) for provider calls. |
-| `WAF_FP_TUNER_MOCK_RESPONSE_FILE` | `conf/fp-tuner-mock-response.json` | Mock provider response fixture path used in `mock` mode. |
-| `WAF_FP_TUNER_REQUIRE_APPROVAL` | `true` | Require approval token for non-simulated apply (`/fp-tuner/apply` with `simulate=false`). |
-| `WAF_FP_TUNER_APPROVAL_TTL_SEC` | `600` | Approval token TTL in seconds. |
-| `WAF_FP_TUNER_AUDIT_FILE` | `logs/coraza/fp-tuner-audit.ndjson` | Audit log destination for propose/apply actions. |
-| `WAF_STORAGE_BACKEND` | `file` | Storage backend selector. `file` keeps file-based operation; `db` enables DB-backed log store + config/rule blob sync. |
-| `WAF_DB_DRIVER` | `sqlite` | DB driver when `WAF_STORAGE_BACKEND=db`. Supported: `sqlite`, `mysql` (implemented for log store and config/rule blobs). |
-| `WAF_DB_ENABLED` | `false` | Legacy compatibility flag. If `WAF_STORAGE_BACKEND` is unset, `true` maps to `db` and `false` maps to `file`. |
-| `WAF_DB_DSN` | (empty) | DSN for network DB drivers (for example MySQL). Required when `WAF_DB_DRIVER=mysql`; sqlite uses `WAF_DB_PATH`. |
-| `WAF_DB_PATH` | `logs/coraza/mamotama.db` | SQLite file path used when `WAF_STORAGE_BACKEND=db` and `WAF_DB_DRIVER=sqlite`. |
-| `WAF_DB_RETENTION_DAYS` | `30` | Retention window for `waf_events` in DB store. Entries older than this are pruned on sync. `0` disables pruning (config blobs are not pruned). |
-| `WAF_DB_SYNC_INTERVAL_SEC` | `0` | Periodic DB→runtime sync interval in seconds. `0` disables background polling; `>=1` enables periodic reconciliation across multiple Coraza nodes. |
-| `WAF_STRICT_OVERRIDE` | `false` | Behavior when a special-rule file fails to load. `true`: fail fast. `false`: warn and continue. |
-| `WAF_API_BASEPATH` | `/mamotama-api` | Base path for admin API routing on Go server. |
-| `WAF_API_KEY_PRIMARY` | `...` | Primary admin API key (`X-API-Key`). |
-| `WAF_API_KEY_SECONDARY` | (empty) | Secondary key for rotation/fallback. Leave empty if unused. |
-| `WAF_API_AUTH_DISABLE` | (empty) | Disable API auth flag. Keep empty (false) in production; use only for test environments. |
-| `WAF_API_CORS_ALLOWED_ORIGINS` | `https://admin.example.com,http://localhost:5173` | Allowed CORS origins (comma-separated). If empty, CORS is disabled (same-origin only). |
-| `WAF_ALLOW_INSECURE_DEFAULTS` | (empty) | Dev-only flag to allow weak API keys or disabled auth. Do not set in production. |
-
-### Admin UI (React / Vite)
-
-| Variable | Example | Description |
-| --- | --- | --- |
-| `VITE_CORAZA_API_BASE` | `http://localhost/mamotama-api` | Full/relative API base path used by browser-side calls. |
-| `VITE_APP_BASE_PATH` | `/mamotama-admin` | Admin UI root path (`react-router` basename). |
-| `VITE_API_KEY` | `...` | API key attached by admin UI (`X-API-Key`). Usually same as `WAF_API_KEY_PRIMARY`. |
-
-At startup, if `WAF_API_KEY_PRIMARY` is too short or known-weak, Coraza fails to start in secure mode.
-For local testing only, you can temporarily relax this with `WAF_ALLOW_INSECURE_DEFAULTS=1`.
+At startup, if `admin.api_key_primary` is too short or known-weak, Coraza fails to start in secure mode.
+For local testing only, you can temporarily relax this with `admin.allow_insecure_defaults=true` in `config.json`.
 
 ---
 
 ## Admin Dashboard
 
-`web/mamotama-admin/` contains the admin UI built with React + Vite.
+Admin UI is served by the Go binary at `/mamotama-ui` (embedded static assets).
+You can still edit source under `web/mamotama-admin/` and rebuild assets for embedding.
 
 ![Admin Dashboard](docs/images/admin-dashboard-overview.png)
 
@@ -132,6 +106,7 @@ For local testing only, you can temporarily relax this with `WAF_ALLOW_INSECURE_
 | `/bot-defense` | View/edit bot-defense config directly (`bot-defense.conf`) |
 | `/semantic` | View/edit semantic security config directly (`semantic.conf`) |
 | `/cache-rules` | Visual + raw editing for cache rules (`cache.conf`), with Validate/Save |
+| `/proxy-rules` | View/validate/probe/update/rollback upstream + transport tuning (`conf/proxy.json`) |
 
 ### Screenshots
 
@@ -162,7 +137,6 @@ For local testing only, you can temporarily relax this with `WAF_ALLOW_INSECURE_
 ### Libraries
 
 - coraza 3.3.3
-- nginx 1.27
 - go 1.25.7
 - React 19
 - Vite 7
@@ -173,13 +147,35 @@ For local testing only, you can temporarily relax this with `WAF_ALLOW_INSECURE_
 ### Startup
 
 ```bash
-./scripts/install_crs.sh
-docker compose build coraza nginx
-docker compose up web
-docker compose up -d coraza nginx
+make setup
+make ui-build-sync
+make compose-up
 ```
 
-You can change the root path by setting `VITE_APP_BASE_PATH` and `VITE_CORAZA_API_BASE` in `.env`.
+Open the embedded admin UI at `http://localhost:${CORAZA_PORT:-9090}/mamotama-ui`.
+Set API key in UI header (`X-API-Key`) and operate via `/mamotama-api/*`.
+
+### Make Shortcuts
+
+```bash
+make help
+make build          # one-shot: web build + embed sync + go binary
+make check          # go-test + ui-test + compose config checks
+make smoke          # embedded UI + proxy-rules smoke checks
+make ci-local       # local CI baseline (check + smoke)
+make compose-down
+```
+
+#### Optional: Legacy Proxy Env Migration (`WAF_APP_URL` -> `conf/proxy.json`)
+
+If you are migrating from older env-based proxy config, generate and validate `proxy.json` with:
+
+```bash
+./scripts/migrate_proxy_config.sh
+./scripts/migrate_proxy_config.sh --check
+```
+
+By default this reads `.env` and resolves to `data/conf/proxy.json`.
 
 #### Optional: Local MySQL Container (profile: `mysql`)
 
@@ -189,9 +185,9 @@ For future DB-driver validation, you can start a local MySQL container:
 docker compose --profile mysql up -d mysql
 ```
 
-When using MySQL for DB-backed logs/configs, set `WAF_STORAGE_BACKEND=db`, `WAF_DB_DRIVER=mysql`, and `WAF_DB_DSN` (for example `mamotama:mamotama@tcp(mysql:3306)/mamotama?charset=utf8mb4&parseTime=true`).
+When using MySQL for DB-backed logs/configs, set `storage.backend=db`, `storage.db_driver=mysql`, and `storage.db_dsn` in `data/conf/config.json` (for example `mamotama:mamotama@tcp(mysql:3306)/mamotama?charset=utf8mb4&parseTime=true`).
 
-For multi-node operation, set `WAF_DB_SYNC_INTERVAL_SEC` (for example `10`) so each node periodically reconciles runtime files from `config_blobs` and applies reload only when content actually changes.
+For multi-node operation, set `storage.db_sync_interval_sec` (for example `10`) so each node periodically reconciles runtime files from `config_blobs` and applies reload only when content actually changes.
 
 Scale-out note: for multiple Coraza nodes, use a shared MySQL backend (`db + mysql`) as the standard setup. `file` and `db + sqlite` are intended for single-node or local validation use.
 
@@ -206,9 +202,8 @@ Run the local regression test:
 Prerequisites:
 
 - Docker and Docker Compose are available.
-- The script automatically builds/starts `coraza` and `nginx`.
-- Default host ports are `HOST_CORAZA_PORT=19090` and `HOST_NGINX_PORT=18080`.
-- Legacy `HOST_OPENRESTY_PORT` is still accepted for compatibility.
+- The script automatically builds/starts `coraza`.
+- Default host port is `HOST_CORAZA_PORT=19090`.
 - The first run may take longer because the GoTestWAF image is pulled.
 
 Default gate is `MIN_BLOCKED_RATIO=70`. Optional extra gates:
@@ -222,6 +217,48 @@ Reports are written to `data/logs/gotestwaf/`:
 - JSON full report: `gotestwaf-report.json`
 - Markdown summary: `gotestwaf-report-summary.md`
 - Key-value summary: `gotestwaf-report-summary.txt`
+
+### Proxy Tuning Benchmark
+
+Run preset-based benchmark against local `coraza` with concurrency:
+
+```bash
+BENCH_REQUESTS=600 WARMUP_REQUESTS=100 BENCH_CONCURRENCY=1,10,50 ./scripts/benchmark_proxy_tuning.sh
+```
+
+The script:
+
+- launches a temporary upstream (`python3 -m http.server`)
+- applies proxy presets via `/mamotama-api/proxy-rules`
+- runs ApacheBench (`ab`) against `BENCH_PATH` (default: `/bench`)
+- assigns isolated `X-Forwarded-For` / `X-Real-IP` per case to reduce cross-case rate-limit bias
+- temporarily disables `rate-limit-rules` during benchmark by default (`BENCH_DISABLE_RATE_LIMIT=1`)
+- writes markdown summary (default: `data/logs/proxy/proxy-benchmark-summary.md`)
+- restores baseline proxy config at the end
+
+Optional quality gates:
+
+```bash
+BENCH_MAX_FAIL_RATE_PCT=0.5 BENCH_MIN_RPS=300 BENCH_CONCURRENCY=10,50 BENCH_DISABLE_RATE_LIMIT=1 ./scripts/benchmark_proxy_tuning.sh
+```
+
+`BENCH_MAX_FAIL_RATE_PCT` and `BENCH_MIN_RPS` are optional. If set, the script exits with non-zero status when a row breaches the threshold.
+Set `BENCH_DISABLE_RATE_LIMIT=0` when you intentionally want to include rate-limit behavior in benchmark results.
+
+Recommended presets:
+
+| Preset | Main knobs | Suggested use |
+| --- | --- | --- |
+| `balanced` | `force_http2=false`, `disable_compression=false`, `buffer_request_body=false`, `flush_interval_ms=0` | General web workloads, safe default |
+| `low-latency` | `force_http2=true`, `disable_compression=true`, `buffer_request_body=false`, `flush_interval_ms=5` | API/SSE style low-latency focus |
+| `buffered-guard` | `force_http2=true`, `buffer_request_body=true`, `max_response_buffer_bytes=1048576`, `flush_interval_ms=25` | Stricter buffering/control over response size |
+
+Summary columns:
+
+- `concurrency`: parallel clients used by `ab -c`
+- `fail_rate_pct`: `(failed + non_2xx) / complete * 100`
+- `avg_latency_ms`, `p95_latency_ms`, `p99_latency_ms`: latency in milliseconds
+- `rps`: measured requests/sec from `ab`
 
 ### Deployment Examples
 
@@ -258,7 +295,8 @@ You can also run HTTP provider mode with a local stub endpoint:
 What this script does:
 
 - Starts a local temporary provider stub on `127.0.0.1:${MOCK_PROVIDER_PORT:-18091}`
-- Starts/rebuilds `coraza` in `WAF_FP_TUNER_MODE=http`
+- Creates a temporary app config derived from `data/conf/config.json` with `fp_tuner.mode=http` and provider endpoint override
+- Starts/rebuilds `coraza` with `WAF_CONFIG_FILE=<temporary-config>`
 - Sends `propose` / `apply` requests and checks response contract
 - Verifies provider-bound payload is masked before external send
 
@@ -340,7 +378,7 @@ This keeps external provider payload small by sending one selected event at a ti
 | GET | `/mamotama-api/status` | Get current WAF status/config |
 | GET | `/mamotama-api/logs/read` | Read WAF logs (`tail`) with optional country filter via `country` query |
 | GET | `/mamotama-api/logs/stats` | Return WAF block summary + hourly series (`hours`, `scan` query supported) |
-| GET | `/mamotama-api/logs/download` | Download log files (`waf` / `accerr` / `intr`) as ZIP |
+| GET | `/mamotama-api/logs/download` | Download WAF log file (`waf`) |
 | GET | `/mamotama-api/rules` | Get active rule files (multi-file aware) |
 | POST | `/mamotama-api/rules:validate` | Validate rule syntax (no save) |
 | PUT | `/mamotama-api/rules` | Save rule file and hot-reload base WAF (`If-Match` supported) |
@@ -378,7 +416,7 @@ If logs or rules are missing, API returns `500` with `{"error":"..."}`.
 
 ### Bypass File Location
 
-Specify with environment variable `WAF_BYPASS_FILE` (default: `conf/waf.bypass`).
+Specify in `data/conf/config.json` via `paths.bypass_file` (default: `conf/waf.bypass`).
 
 ### File Format
 
@@ -400,13 +438,13 @@ You can directly edit and save `waf.bypass` from dashboard `/bypass`.
 
 ### Country Block Settings
 
-You can edit `WAF_COUNTRY_BLOCK_FILE` (default: `conf/country-block.conf`) from `/country-block`.
+You can edit `paths.country_block_file` (default: `conf/country-block.conf`) from `/country-block`.
 Use one country code per line (`JP`, `US`, `UNKNOWN`).
 Matched countries are blocked with `403` before WAF inspection.
 
 ### Rate Limit Settings
 
-You can edit `WAF_RATE_LIMIT_FILE` (default: `conf/rate-limit.conf`) from `/rate-limit`.
+You can edit `paths.rate_limit_file` (default: `conf/rate-limit.conf`) from `/rate-limit`.
 Configuration format is JSON with `default_policy` and `rules`.
 On exceed, response uses `action.status` (typically `429`) and includes `Retry-After` header.
 
@@ -440,7 +478,7 @@ On exceed, response uses `action.status` (typically `429`) and includes `Retry-A
 
 ### Bot Defense Settings
 
-You can edit `WAF_BOT_DEFENSE_FILE` (default: `conf/bot-defense.conf`) from `/bot-defense`.
+You can edit `paths.bot_defense_file` (default: `conf/bot-defense.conf`) from `/bot-defense`.
 When enabled, suspicious (or all, depending on mode) browser-like GET requests on matched paths receive a challenge response before WAF inspection.
 
 #### JSON Parameter Quick Reference
@@ -459,7 +497,7 @@ When enabled, suspicious (or all, depending on mode) browser-like GET requests o
 
 ### Semantic Security Settings
 
-You can edit `WAF_SEMANTIC_FILE` (default: `conf/semantic.conf`) from `/semantic`.
+You can edit `paths.semantic_file` (default: `conf/semantic.conf`) from `/semantic`.
 This is a heuristic detector (rule-based, non-ML) with staged enforcement: `off | log_only | challenge | block`.
 
 #### JSON Parameter Quick Reference
@@ -476,20 +514,20 @@ This is a heuristic detector (rule-based, non-ML) with staged enforcement: `off 
 
 ### Rule File Editing (multi-file aware)
 
-Dashboard `/rules` edits active base rule set (`WAF_RULES_FILE` and, when CRS enabled, `crs-setup.conf` + enabled `*.conf` under `WAF_CRS_RULES_DIR`).
+Dashboard `/rules` edits active base rule set (`paths.rules_file` and, when CRS enabled, `paths.crs_setup_file` + enabled `*.conf` under `paths.crs_rules_dir`).
 Before save, server-side syntax validation is performed. Successful save hot-reloads base WAF.
 If reload fails, automatic rollback is applied.
 
 ### CRS Rule Set Toggle
 
 Dashboard `/rule-sets` toggles each file under `rules/crs/rules/*.conf`.
-State is persisted to `WAF_CRS_DISABLED_FILE` and WAF is hot-reloaded on save.
+State is persisted to `paths.crs_disabled_file` and WAF is hot-reloaded on save.
 
 ### Priority
 
 - Special-rule entries take precedence (bypass entries on same path are ignored)
 - If rule file does not exist:
-  - `WAF_STRICT_OVERRIDE=true`: fail immediately (`log.Fatalf`)
+  - `admin.strict_override=true`: fail immediately (`log.Fatalf`)
   - `false` or unset: log warning and continue with normal rules
 
 ### Example
@@ -516,12 +554,12 @@ curl -s -H "X-API-Key: <your-api-key>" \
      "http://<host>/mamotama-api/logs/read?src=waf&tail=100&country=JP" | jq .
 ```
 
-- `src`: log type (`waf`, `accerr`, `intr`)
+- `src`: log type (`waf`)
 - `tail`: number of lines
 - `country`: country code filter (`JP`, `US`, `UNKNOWN`). Omit or set `ALL` for all records.
   - Under Cloudflare, `CF-IPCountry` header is used. If unavailable, `UNKNOWN` is used.
 
-Use the API key configured in `.env`.
+Use the API key configured in `data/conf/config.json` (`admin.api_key_primary` / `admin.api_key_secondary`).
 For production, always enforce access controls and authentication.
 
 ## Cache Feature
@@ -560,12 +598,12 @@ Field details:
 - `regex`: regex match (`^` and `$` supported)
 - `methods`: target HTTP methods (comma-separated)
 - `ttl`: cache duration in seconds
-- `vary`: `Vary` header values for nginx (comma-separated)
+- `vary`: `Vary` header values added to response (comma-separated)
 
 ### Behavior Summary
 
 - Go side sets `X-Mamotama-Cacheable` and `X-Accel-Expires` on responses matching cache rules
-- nginx controls cache based on those headers
+- these headers can be consumed by external cache/CDN layers if needed
 - Requests with auth headers, cookies, or API paths are non-cacheable by default
 - Upstream responses containing `Set-Cookie` are not stored (to prevent shared-cache leakage)
 
@@ -575,14 +613,14 @@ Check response headers:
 - `X-Mamotama-Cacheable: 1`
 - `X-Accel-Expires: <seconds>`
 
-You can inspect cache hit state using nginx `X-Cache-Status` header (`MISS`/`HIT`/`BYPASS`, etc.).
+By default this stack does not include an internal HTTP cache layer.
 
 ---
 
 ## Admin UI Access Restrictions
 
 This project does not include access control by default.
-If you expose admin UI (`NGX_CORAZA_ADMIN_URL`), always configure access controls such as Basic Auth and/or IP restrictions.
+If you expose admin UI (`/mamotama-ui`), always configure access controls such as Basic Auth and/or IP restrictions.
 
 ---
 
@@ -593,7 +631,8 @@ GitHub Actions workflow `ci` validates:
 - `go test ./...` (`coraza/src`)
 - `docker compose config` sanity check
 - MySQL log-store integration test (`go test ./internal/handler -run TestLogsStatsMySQLStoreAggregatesAndIngestsIncrementally`, with `docker compose --profile mysql up -d mysql`)
-- `./scripts/run_gotestwaf.sh` (`waf-test` matrix, `MIN_BLOCKED_RATIO=70`, `WAF_DB_ENABLED=false/true`)
+- Proxy admin smoke (`./scripts/ci_proxy_admin_smoke.sh`: embedded UI + `proxy-rules` validate/probe/PUT/rollback + ETag conflict)
+- `./scripts/run_gotestwaf.sh` (`waf-test` matrix, `MIN_BLOCKED_RATIO=70`, with both `storage.backend=file` and `storage.backend=db`)
 
 In production workflows, set these as required branch protection checks:
 
@@ -602,6 +641,12 @@ In production workflows, set these as required branch protection checks:
 - `ci / compose-validate`
 - `ci / waf-test (file)`
 - `ci / waf-test (sqlite)`
+
+For local pre-push verification, use:
+
+```bash
+make ci-local
+```
 
 ---
 

@@ -517,7 +517,7 @@ func ensureSemanticFile(path string) error {
   "mode": "log_only",
   "exempt_path_prefixes": [
     "/mamotama-api",
-    "/mamotama-admin",
+    "/mamotama-ui",
     "/health",
     "/healthz",
     "/metrics",

@@ -6,12 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/corazawaf/coraza/v3"
@@ -33,24 +30,12 @@ const (
 	ctxKeyCountry ctxKey = "country"
 )
 
-var proxy *httputil.ReverseProxy
-var proxyInitOnce sync.Once
-
-func ensureProxy() {
-	proxyInitOnce.Do(func() {
-		u, err := url.Parse(config.AppURL)
-		if err != nil {
-			log.Fatalf("Invalid WAF_APP_URL: %v", err)
-		}
-		proxy = httputil.NewSingleHostReverseProxy(u)
-		proxy.ModifyResponse = onProxyResponse
-	})
-}
-
 func onProxyResponse(res *http.Response) error {
+	if err := maybeBufferProxyResponseBody(res); err != nil {
+		return err
+	}
 	annotateWAFHit(res)
 	applyCacheHeaders(res)
-
 	return nil
 }
 
@@ -136,9 +121,6 @@ func selectWAFEngine(reqPath string) coraza.WAF {
 		log.Printf("[BYPASS][RULE] %s extra=%s", reqPath, mr.ExtraRule)
 		ruleWAF, err := waf.GetWAFForExtraRule(mr.ExtraRule)
 		if err != nil {
-			if config.StrictOverride {
-				log.Fatalf("[BYPASS][RULE][STRICT] %v", err)
-			}
 			log.Printf("[BYPASS][RULE][WARN] %v (fallback=default-rules)", err)
 			return wafEngine
 		}
@@ -159,8 +141,6 @@ func setWAFContext(c *gin.Context, reqID, clientIP, country string, wafHit bool,
 }
 
 func ProxyHandler(c *gin.Context) {
-	ensureProxy()
-
 	reqID := ensureRequestID(c)
 	clientIP := requestClientIP(c)
 	country := normalizeCountryCode(c.GetHeader("X-Country-Code"))
@@ -267,7 +247,11 @@ func ProxyHandler(c *gin.Context) {
 	wafEngine := selectWAFEngine(reqPath)
 	if wafEngine == nil {
 		log.Printf("[BYPASS][HIT] %s -> skip WAF", reqPath)
-		proxy.ServeHTTP(c.Writer, c.Request)
+		if err := maybeBufferProxyRequestBody(c.Request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		ServeProxy(c.Writer, c.Request)
 		return
 	}
 
@@ -290,7 +274,6 @@ func ProxyHandler(c *gin.Context) {
 	ruleIDs := make([]string, 0, 4)
 	for _, matched := range tx.MatchedRules() {
 		wafHit = true
-		// Rule().ID() on v3; fallback to mr.RuleID if your type differs
 		if matched.Rule() != nil {
 			ruleIDs = append(ruleIDs, strconv.Itoa(matched.Rule().ID()))
 		}
@@ -304,8 +287,12 @@ func ProxyHandler(c *gin.Context) {
 			"service": "coraza",
 			"level":   "WARN",
 			"event":   "waf_block",
-			"req_id":  reqID, "ip": clientIP, "country": country, "path": c.Request.URL.Path,
-			"rule_id": it.RuleID, "status": it.Status,
+			"req_id":  reqID,
+			"ip":      clientIP,
+			"country": country,
+			"path":    c.Request.URL.Path,
+			"rule_id": it.RuleID,
+			"status":  it.Status,
 		}
 		emitJSONLog(evt)
 		_ = appendEventToFile(evt)
@@ -313,7 +300,11 @@ func ProxyHandler(c *gin.Context) {
 		return
 	}
 
-	proxy.ServeHTTP(c.Writer, c.Request)
+	if err := maybeBufferProxyRequestBody(c.Request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ServeProxy(c.Writer, c.Request)
 }
 
 func genReqID() string {
@@ -340,7 +331,7 @@ func emitJSONLog(obj map[string]any) {
 }
 
 func appendEventToFile(obj map[string]any) error {
-	path := os.Getenv("WAF_EVENTS_FILE")
+	path := strings.TrimSpace(config.LogFile)
 	if path == "" {
 		path = "/app/logs/coraza/waf-events.ndjson"
 	}
