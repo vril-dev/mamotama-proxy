@@ -26,7 +26,7 @@ proxy_api_wait_health() {
   local interval="${2:-1}"
   local i code
   for i in $(seq 1 "${retries}"); do
-    code="$(curl -sS -o /dev/null -w "%{http_code}" "${PROXY_BASE_URL}/healthz" || true)"
+    code="$(curl -s -o /dev/null -w "%{http_code}" "${PROXY_BASE_URL}/healthz" || true)"
     if [[ "${code}" == "200" ]]; then
       return 0
     fi

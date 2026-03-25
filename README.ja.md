@@ -57,6 +57,15 @@ Coraza + CRS WAFプロジェクト
 | --- | --- | --- |
 | `WAF_LISTEN_ADDR` | `:9090` | Corazaシングルバイナリサービスの待受アドレス。 |
 | `WAF_LISTEN_PORT` | `9090` | Compose で使うコンテナ側待受ポート（`ports` / healthcheck / GoTestWAF ターゲット）。`WAF_LISTEN_ADDR` のポートと揃えてください。 |
+| `WAF_SERVER_READ_TIMEOUT_SEC` | `30` | HTTPサーバのリクエスト読み取りタイムアウト秒数（`http.Server.ReadTimeout`）。 |
+| `WAF_SERVER_READ_HEADER_TIMEOUT_SEC` | `5` | HTTPヘッダ読み取りタイムアウト秒数（`http.Server.ReadHeaderTimeout`）。 |
+| `WAF_SERVER_WRITE_TIMEOUT_SEC` | `0` | HTTPレスポンス書き込みタイムアウト秒数（`http.Server.WriteTimeout`）。`0` は無制限。 |
+| `WAF_SERVER_IDLE_TIMEOUT_SEC` | `120` | keep-alive のアイドルタイムアウト秒数（`http.Server.IdleTimeout`）。 |
+| `WAF_SERVER_MAX_HEADER_BYTES` | `1048576` | HTTPヘッダ最大サイズ（`http.Server.MaxHeaderBytes`）。 |
+| `WAF_SERVER_MAX_CONCURRENT_REQUESTS` | `0` | 全体の同時処理中リクエスト上限。`0` で無効。 |
+| `WAF_SERVER_MAX_CONCURRENT_PROXY_REQUESTS` | `0` | Proxy経路（`NoRoute`）専用の同時処理上限。`0` で無効。 |
+| `WAF_RUNTIME_GOMAXPROCS` | `0` | Goスケジューラ並列度の上書き。`0` はランタイム既定。 |
+| `WAF_RUNTIME_MEMORY_LIMIT_MB` | `0` | `runtime/debug.SetMemoryLimit` で指定するプロセスメモリ上限(MB)。`0` で無効。 |
 | `WAF_PROXY_CONFIG_FILE` | `conf/proxy.json` | 必須のProxy設定JSONパス。欠落/不正なら起動失敗。 |
 | `WAF_PROXY_ROLLBACK_HISTORY_SIZE` | `8` | `/proxy-rules:rollback` で使うメモリ上ロールバック履歴件数（`1..64`）。 |
 | `WAF_LOG_FILE` | (空) | WAFログの出力先。未設定なら標準出力。 |
@@ -239,16 +248,27 @@ MIN_TRUE_NEGATIVE_PASSED_RATIO=95 MAX_FALSE_POSITIVE_RATIO=5 MAX_BYPASS_RATIO=30
 ローカル `coraza` に対してプリセット比較ベンチを実行:
 
 ```bash
-BENCH_REQUESTS=120 WARMUP_REQUESTS=20 ./scripts/benchmark_proxy_tuning.sh
+BENCH_REQUESTS=600 WARMUP_REQUESTS=100 BENCH_CONCURRENCY=1,10,50 ./scripts/benchmark_proxy_tuning.sh
 ```
 
 このスクリプトは次を自動実行します:
 
 - 一時 upstream（`python3 -m http.server`）を起動
 - `/mamotama-api/proxy-rules` 経由でプリセット適用
-- `/bench` 経路で遅延サンプリング
+- `BENCH_PATH`（既定: `/bench`）へ ApacheBench（`ab`）で負荷実行
+- ケースごとに `X-Forwarded-For` / `X-Real-IP` を分離し、レート制限の相互影響を低減
+- 既定では `BENCH_DISABLE_RATE_LIMIT=1` として、ベンチ中のみ `rate-limit-rules` を一時無効化
 - Markdownサマリ出力（既定: `data/logs/proxy/proxy-benchmark-summary.md`）
 - 終了時に元の proxy 設定へ復元
+
+任意の品質ゲート:
+
+```bash
+BENCH_MAX_FAIL_RATE_PCT=0.5 BENCH_MIN_RPS=300 BENCH_CONCURRENCY=10,50 BENCH_DISABLE_RATE_LIMIT=1 ./scripts/benchmark_proxy_tuning.sh
+```
+
+`BENCH_MAX_FAIL_RATE_PCT` と `BENCH_MIN_RPS` は任意指定です。設定した場合、閾値を超えた行があるとスクリプトは非0で終了します。
+rate limit の挙動を含めたい場合は `BENCH_DISABLE_RATE_LIMIT=0` を指定します。
 
 推奨プリセット:
 
@@ -257,6 +277,13 @@ BENCH_REQUESTS=120 WARMUP_REQUESTS=20 ./scripts/benchmark_proxy_tuning.sh
 | `balanced` | `force_http2=false`, `disable_compression=false`, `buffer_request_body=false`, `flush_interval_ms=0` | 汎用Web向けの標準設定 |
 | `low-latency` | `force_http2=true`, `disable_compression=true`, `buffer_request_body=false`, `flush_interval_ms=5` | API/SSE の低遅延重視 |
 | `buffered-guard` | `force_http2=true`, `buffer_request_body=true`, `max_response_buffer_bytes=1048576`, `flush_interval_ms=25` | バッファ制御と応答サイズ上限を重視 |
+
+サマリ列の見方:
+
+- `concurrency`: `ab -c` の同時接続数
+- `fail_rate_pct`: `(failed + non_2xx) / complete * 100`
+- `avg_latency_ms`, `p95_latency_ms`, `p99_latency_ms`: ミリ秒単位の遅延
+- `rps`: `ab` 実測の requests/sec
 
 ### デプロイ例
 

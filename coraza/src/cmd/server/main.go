@@ -1,7 +1,11 @@
 package main
 
 import (
+	"errors"
 	"log"
+	"net/http"
+	"runtime"
+	"runtime/debug"
 	"strings"
 
 	"github.com/gin-contrib/cors"
@@ -16,6 +20,15 @@ import (
 
 func main() {
 	config.LoadEnv()
+	if config.RuntimeGOMAXPROCS > 0 {
+		prev := runtime.GOMAXPROCS(config.RuntimeGOMAXPROCS)
+		log.Printf("[RUNTIME] GOMAXPROCS set to %d (previous=%d)", config.RuntimeGOMAXPROCS, prev)
+	}
+	if config.RuntimeMemoryLimitMB > 0 {
+		limitBytes := int64(config.RuntimeMemoryLimitMB) * 1024 * 1024
+		prev := debug.SetMemoryLimit(limitBytes)
+		log.Printf("[RUNTIME] memory limit set to %d MB (previous=%d MB)", config.RuntimeMemoryLimitMB, prev/(1024*1024))
+	}
 	if err := handler.InitProxyRuntime(config.ProxyConfigFile, config.ProxyRollbackMax); err != nil {
 		log.Fatalf("[FATAL] failed to initialize proxy runtime: %v", err)
 	}
@@ -92,6 +105,15 @@ func main() {
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
+
+	if config.ServerMaxConcurrentReqs > 0 {
+		r.Use(middleware.ConcurrencyLimit(config.ServerMaxConcurrentReqs, "global"))
+		log.Printf("[SERVER] global concurrency guard enabled max=%d", config.ServerMaxConcurrentReqs)
+	}
+	proxyConcurrencyGuard := middleware.NewConcurrencyGuard(config.ServerMaxConcurrentProxy, "proxy")
+	if proxyConcurrencyGuard != nil {
+		log.Printf("[SERVER] proxy concurrency guard enabled max=%d", config.ServerMaxConcurrentProxy)
+	}
 
 	if len(config.APICORSOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
@@ -176,6 +198,13 @@ func main() {
 			c.AbortWithStatus(404)
 			return
 		}
+		if proxyConcurrencyGuard != nil && !proxyConcurrencyGuard.Acquire() {
+			proxyConcurrencyGuard.Reject(c)
+			return
+		}
+		if proxyConcurrencyGuard != nil {
+			defer proxyConcurrencyGuard.Release()
+		}
 
 		handler.ProxyHandler(c)
 	})
@@ -197,8 +226,25 @@ func main() {
 		defer stopWatch()
 	}
 
+	srv := &http.Server{
+		Addr:              config.ListenAddr,
+		Handler:           r,
+		ReadTimeout:       config.ServerReadTimeout,
+		ReadHeaderTimeout: config.ServerReadHeaderTimeout,
+		WriteTimeout:      config.ServerWriteTimeout,
+		IdleTimeout:       config.ServerIdleTimeout,
+		MaxHeaderBytes:    config.ServerMaxHeaderBytes,
+	}
+
 	log.Printf("[INFO] starting server on %s", config.ListenAddr)
-	if err := r.Run(config.ListenAddr); err != nil {
+	log.Printf("[SERVER] read_timeout=%s read_header_timeout=%s write_timeout=%s idle_timeout=%s max_header_bytes=%d",
+		config.ServerReadTimeout,
+		config.ServerReadHeaderTimeout,
+		config.ServerWriteTimeout,
+		config.ServerIdleTimeout,
+		config.ServerMaxHeaderBytes,
+	)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("[FATAL] server stopped: %v", err)
 	}
 }

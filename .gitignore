@@ -42,6 +42,8 @@ data/logs/coraza/*
 !data/logs/coraza/empty
 data/logs/gotestwaf/*
 !data/logs/gotestwaf/empty
+data/logs/proxy/*
+!data/logs/proxy/empty
 
 # examples
 examples/*/.env

@@ -140,3 +140,87 @@ func TestParseProxyRollbackHistorySize(t *testing.T) {
 		})
 	}
 }
+
+func TestParseServerTimeoutSec(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        string
+		def       int
+		allowZero bool
+		want      int
+	}{
+		{name: "default", in: "", def: 30, allowZero: false, want: 30},
+		{name: "negative-fallback", in: "-1", def: 30, allowZero: false, want: 30},
+		{name: "zero-disallowed", in: "0", def: 30, allowZero: false, want: 30},
+		{name: "zero-allowed", in: "0", def: 30, allowZero: true, want: 0},
+		{name: "valid", in: "15", def: 30, allowZero: false, want: 15},
+		{name: "cap", in: "999999", def: 30, allowZero: false, want: 3600},
+		{name: "invalid-fallback", in: "abc", def: 30, allowZero: false, want: 30},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseServerTimeoutSec(tc.in, tc.def, tc.allowZero); got != tc.want {
+				t.Fatalf("parseServerTimeoutSec(%q,%d,%v)=%d want=%d", tc.in, tc.def, tc.allowZero, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseServerMaxHeaderBytes(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{in: "", want: 1 << 20},
+		{in: "1", want: 1024},
+		{in: "1024", want: 1024},
+		{in: "2097152", want: 2097152},
+		{in: "999999999", want: 16 << 20},
+		{in: "abc", want: 1 << 20},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.in, func(t *testing.T) {
+			if got := parseServerMaxHeaderBytes(tc.in); got != tc.want {
+				t.Fatalf("parseServerMaxHeaderBytes(%q)=%d want=%d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseServerConcurrency(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{in: "", want: 0},
+		{in: "-1", want: 0},
+		{in: "0", want: 0},
+		{in: "100", want: 100},
+		{in: "9999999", want: 200000},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.in, func(t *testing.T) {
+			if got := parseServerConcurrency(tc.in); got != tc.want {
+				t.Fatalf("parseServerConcurrency(%q)=%d want=%d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseRuntimeCaps(t *testing.T) {
+	if got := parseRuntimeGOMAXPROCS("-1"); got != 0 {
+		t.Fatalf("parseRuntimeGOMAXPROCS(-1)=%d want=0", got)
+	}
+	if got := parseRuntimeGOMAXPROCS("5000"); got != 4096 {
+		t.Fatalf("parseRuntimeGOMAXPROCS(5000)=%d want=4096", got)
+	}
+	if got := parseRuntimeMemoryLimitMB("-1"); got != 0 {
+		t.Fatalf("parseRuntimeMemoryLimitMB(-1)=%d want=0", got)
+	}
+	if got := parseRuntimeMemoryLimitMB("9999999"); got != 1024*1024 {
+		t.Fatalf("parseRuntimeMemoryLimitMB(9999999)=%d want=%d", got, 1024*1024)
+	}
+}

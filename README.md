@@ -56,6 +56,15 @@ You can control behavior via `.env`.
 | --- | --- | --- |
 | `WAF_LISTEN_ADDR` | `:9090` | Listen address for Coraza single-binary service. |
 | `WAF_LISTEN_PORT` | `9090` | Container-side listen port used by Compose (`ports`, healthcheck, GoTestWAF target). Keep this aligned with `WAF_LISTEN_ADDR` port. |
+| `WAF_SERVER_READ_TIMEOUT_SEC` | `30` | HTTP server read timeout in seconds (`http.Server.ReadTimeout`). |
+| `WAF_SERVER_READ_HEADER_TIMEOUT_SEC` | `5` | HTTP server header read timeout in seconds (`http.Server.ReadHeaderTimeout`). |
+| `WAF_SERVER_WRITE_TIMEOUT_SEC` | `0` | HTTP server write timeout in seconds (`http.Server.WriteTimeout`). `0` keeps unlimited write timeout. |
+| `WAF_SERVER_IDLE_TIMEOUT_SEC` | `120` | HTTP keep-alive idle timeout in seconds (`http.Server.IdleTimeout`). |
+| `WAF_SERVER_MAX_HEADER_BYTES` | `1048576` | Maximum header bytes accepted by server (`http.Server.MaxHeaderBytes`). |
+| `WAF_SERVER_MAX_CONCURRENT_REQUESTS` | `0` | Global in-flight request cap. `0` disables global concurrency guard. |
+| `WAF_SERVER_MAX_CONCURRENT_PROXY_REQUESTS` | `0` | Proxy path (`NoRoute`) in-flight request cap. `0` disables proxy-specific guard. |
+| `WAF_RUNTIME_GOMAXPROCS` | `0` | Override Go scheduler parallelism. `0` keeps runtime default. |
+| `WAF_RUNTIME_MEMORY_LIMIT_MB` | `0` | Process memory limit in MB via `runtime/debug.SetMemoryLimit`. `0` disables override. |
 | `WAF_PROXY_CONFIG_FILE` | `conf/proxy.json` | Mandatory proxy configuration JSON path. Proxy runtime fails fast if this file is missing/invalid. |
 | `WAF_PROXY_ROLLBACK_HISTORY_SIZE` | `8` | In-memory rollback history depth for `/proxy-rules:rollback` (range: `1..64`). |
 | `WAF_LOG_FILE` | (empty) | WAF log output destination. If empty, stdout is used. |
@@ -235,19 +244,30 @@ Reports are written to `data/logs/gotestwaf/`:
 
 ### Proxy Tuning Benchmark
 
-Run preset-based benchmark against local `coraza`:
+Run preset-based benchmark against local `coraza` with concurrency:
 
 ```bash
-BENCH_REQUESTS=120 WARMUP_REQUESTS=20 ./scripts/benchmark_proxy_tuning.sh
+BENCH_REQUESTS=600 WARMUP_REQUESTS=100 BENCH_CONCURRENCY=1,10,50 ./scripts/benchmark_proxy_tuning.sh
 ```
 
 The script:
 
 - launches a temporary upstream (`python3 -m http.server`)
 - applies proxy presets via `/mamotama-api/proxy-rules`
-- runs latency sampling through `/bench`
+- runs ApacheBench (`ab`) against `BENCH_PATH` (default: `/bench`)
+- assigns isolated `X-Forwarded-For` / `X-Real-IP` per case to reduce cross-case rate-limit bias
+- temporarily disables `rate-limit-rules` during benchmark by default (`BENCH_DISABLE_RATE_LIMIT=1`)
 - writes markdown summary (default: `data/logs/proxy/proxy-benchmark-summary.md`)
 - restores baseline proxy config at the end
+
+Optional quality gates:
+
+```bash
+BENCH_MAX_FAIL_RATE_PCT=0.5 BENCH_MIN_RPS=300 BENCH_CONCURRENCY=10,50 BENCH_DISABLE_RATE_LIMIT=1 ./scripts/benchmark_proxy_tuning.sh
+```
+
+`BENCH_MAX_FAIL_RATE_PCT` and `BENCH_MIN_RPS` are optional. If set, the script exits with non-zero status when a row breaches the threshold.
+Set `BENCH_DISABLE_RATE_LIMIT=0` when you intentionally want to include rate-limit behavior in benchmark results.
 
 Recommended presets:
 
@@ -256,6 +276,13 @@ Recommended presets:
 | `balanced` | `force_http2=false`, `disable_compression=false`, `buffer_request_body=false`, `flush_interval_ms=0` | General web workloads, safe default |
 | `low-latency` | `force_http2=true`, `disable_compression=true`, `buffer_request_body=false`, `flush_interval_ms=5` | API/SSE style low-latency focus |
 | `buffered-guard` | `force_http2=true`, `buffer_request_body=true`, `max_response_buffer_bytes=1048576`, `flush_interval_ms=25` | Stricter buffering/control over response size |
+
+Summary columns:
+
+- `concurrency`: parallel clients used by `ab -c`
+- `fail_rate_pct`: `(failed + non_2xx) / complete * 100`
+- `avg_latency_ms`, `p95_latency_ms`, `p99_latency_ms`: latency in milliseconds
+- `rps`: measured requests/sec from `ab`
 
 ### Deployment Examples
 

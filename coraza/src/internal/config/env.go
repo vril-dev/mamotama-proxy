@@ -11,27 +11,36 @@ import (
 )
 
 var (
-	ProxyConfigFile  string
-	UIBasePath       string
-	ProxyRollbackMax int
-	ListenAddr       string
-	RulesFile        string
-	BypassFile       string
-	CountryBlockFile string
-	RateLimitFile    string
-	BotDefenseFile   string
-	SemanticFile     string
-	LogFile          string
-	StrictOverride   bool
-	APIBasePath      string
-	APIKeyPrimary    string
-	APIKeySecondary  string
-	APIAuthDisable   bool
-	APICORSOrigins   []string
-	CRSEnable        bool
-	CRSSetupFile     string
-	CRSRulesDir      string
-	CRSDisabledFile  string
+	ProxyConfigFile          string
+	UIBasePath               string
+	ProxyRollbackMax         int
+	ListenAddr               string
+	ServerReadTimeout        time.Duration
+	ServerReadHeaderTimeout  time.Duration
+	ServerWriteTimeout       time.Duration
+	ServerIdleTimeout        time.Duration
+	ServerMaxHeaderBytes     int
+	ServerMaxConcurrentReqs  int
+	ServerMaxConcurrentProxy int
+	RuntimeGOMAXPROCS        int
+	RuntimeMemoryLimitMB     int
+	RulesFile                string
+	BypassFile               string
+	CountryBlockFile         string
+	RateLimitFile            string
+	BotDefenseFile           string
+	SemanticFile             string
+	LogFile                  string
+	StrictOverride           bool
+	APIBasePath              string
+	APIKeyPrimary            string
+	APIKeySecondary          string
+	APIAuthDisable           bool
+	APICORSOrigins           []string
+	CRSEnable                bool
+	CRSSetupFile             string
+	CRSRulesDir              string
+	CRSDisabledFile          string
 
 	AllowInsecureDefaults bool
 
@@ -64,6 +73,15 @@ func LoadEnv() {
 	UIBasePath = "/mamotama-ui"
 	ProxyRollbackMax = parseProxyRollbackHistorySize(os.Getenv("WAF_PROXY_ROLLBACK_HISTORY_SIZE"))
 	ListenAddr = parseListenAddr(os.Getenv("WAF_LISTEN_ADDR"))
+	ServerReadTimeout = time.Duration(parseServerTimeoutSec(os.Getenv("WAF_SERVER_READ_TIMEOUT_SEC"), 30, false)) * time.Second
+	ServerReadHeaderTimeout = time.Duration(parseServerTimeoutSec(os.Getenv("WAF_SERVER_READ_HEADER_TIMEOUT_SEC"), 5, false)) * time.Second
+	ServerWriteTimeout = time.Duration(parseServerTimeoutSec(os.Getenv("WAF_SERVER_WRITE_TIMEOUT_SEC"), 0, true)) * time.Second
+	ServerIdleTimeout = time.Duration(parseServerTimeoutSec(os.Getenv("WAF_SERVER_IDLE_TIMEOUT_SEC"), 120, false)) * time.Second
+	ServerMaxHeaderBytes = parseServerMaxHeaderBytes(os.Getenv("WAF_SERVER_MAX_HEADER_BYTES"))
+	ServerMaxConcurrentReqs = parseServerConcurrency(os.Getenv("WAF_SERVER_MAX_CONCURRENT_REQUESTS"))
+	ServerMaxConcurrentProxy = parseServerConcurrency(os.Getenv("WAF_SERVER_MAX_CONCURRENT_PROXY_REQUESTS"))
+	RuntimeGOMAXPROCS = parseRuntimeGOMAXPROCS(os.Getenv("WAF_RUNTIME_GOMAXPROCS"))
+	RuntimeMemoryLimitMB = parseRuntimeMemoryLimitMB(os.Getenv("WAF_RUNTIME_MEMORY_LIMIT_MB"))
 	RulesFile = os.Getenv("WAF_RULES_FILE")
 	BypassFile = os.Getenv("WAF_BYPASS_FILE")
 	CountryBlockFile = strings.TrimSpace(os.Getenv("WAF_COUNTRY_BLOCK_FILE"))
@@ -305,6 +323,64 @@ func parseProxyRollbackHistorySize(v string) int {
 	}
 	if n > 64 {
 		return 64
+	}
+	return n
+}
+
+func parseServerTimeoutSec(v string, def int, allowZero bool) int {
+	n := parseIntDefault(v, def)
+	if n < 0 {
+		return def
+	}
+	if n == 0 && !allowZero {
+		return def
+	}
+	if n > 3600 {
+		return 3600
+	}
+	return n
+}
+
+func parseServerMaxHeaderBytes(v string) int {
+	n := parseIntDefault(v, 1<<20)
+	if n < 1024 {
+		return 1024
+	}
+	if n > 16<<20 {
+		return 16 << 20
+	}
+	return n
+}
+
+func parseServerConcurrency(v string) int {
+	n := parseIntDefault(v, 0)
+	if n < 0 {
+		return 0
+	}
+	if n > 200000 {
+		return 200000
+	}
+	return n
+}
+
+func parseRuntimeGOMAXPROCS(v string) int {
+	n := parseIntDefault(v, 0)
+	if n < 0 {
+		return 0
+	}
+	if n > 4096 {
+		return 4096
+	}
+	return n
+}
+
+func parseRuntimeMemoryLimitMB(v string) int {
+	n := parseIntDefault(v, 0)
+	if n < 0 {
+		return 0
+	}
+	if n > 1024*1024 {
+		return 1024 * 1024
 	}
 	return n
 }
