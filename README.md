@@ -178,6 +178,17 @@ If you are upgrading from older versions, run this once to merge legacy `*.ndjso
 ./scripts/migrate_proxy_logs.sh
 ```
 
+#### Optional: Legacy Proxy Env Migration (`WAF_APP_URL` -> `conf/proxy.json`)
+
+If you are migrating from older env-based proxy config, generate and validate `proxy.json` with:
+
+```bash
+./scripts/migrate_proxy_config.sh
+./scripts/migrate_proxy_config.sh --check
+```
+
+By default this reads `.env` and resolves `WAF_PROXY_CONFIG_FILE=conf/proxy.json` to host path `data/conf/proxy.json`.
+
 #### Optional: Local MySQL Container (profile: `mysql`)
 
 For future DB-driver validation, you can start a local MySQL container:
@@ -218,6 +229,30 @@ Reports are written to `data/logs/gotestwaf/`:
 - JSON full report: `gotestwaf-report.json`
 - Markdown summary: `gotestwaf-report-summary.md`
 - Key-value summary: `gotestwaf-report-summary.txt`
+
+### Proxy Tuning Benchmark
+
+Run preset-based benchmark against local `coraza`:
+
+```bash
+BENCH_REQUESTS=120 WARMUP_REQUESTS=20 ./scripts/benchmark_proxy_tuning.sh
+```
+
+The script:
+
+- launches a temporary upstream (`python3 -m http.server`)
+- applies proxy presets via `/mamotama-api/proxy-rules`
+- runs latency sampling through `/bench`
+- writes markdown summary (default: `data/logs/proxy/proxy-benchmark-summary.md`)
+- restores baseline proxy config at the end
+
+Recommended presets:
+
+| Preset | Main knobs | Suggested use |
+| --- | --- | --- |
+| `balanced` | `force_http2=false`, `disable_compression=false`, `buffer_request_body=false`, `flush_interval_ms=0` | General web workloads, safe default |
+| `low-latency` | `force_http2=true`, `disable_compression=true`, `buffer_request_body=false`, `flush_interval_ms=5` | API/SSE style low-latency focus |
+| `buffered-guard` | `force_http2=true`, `buffer_request_body=true`, `max_response_buffer_bytes=1048576`, `flush_interval_ms=25` | Stricter buffering/control over response size |
 
 ### Deployment Examples
 
@@ -589,6 +624,7 @@ GitHub Actions workflow `ci` validates:
 - `go test ./...` (`coraza/src`)
 - `docker compose config` sanity check
 - MySQL log-store integration test (`go test ./internal/handler -run TestLogsStatsMySQLStoreAggregatesAndIngestsIncrementally`, with `docker compose --profile mysql up -d mysql`)
+- Proxy admin smoke (`./scripts/ci_proxy_admin_smoke.sh`: embedded UI + `proxy-rules` validate/probe/PUT/rollback + ETag conflict)
 - `./scripts/run_gotestwaf.sh` (`waf-test` matrix, `MIN_BLOCKED_RATIO=70`, `WAF_DB_ENABLED=false/true`)
 
 In production workflows, set these as required branch protection checks:
