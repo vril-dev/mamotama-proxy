@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
-import { getAPIBasePath, getAPIKey, setAPIKey } from "@/lib/api";
+import { getAPIBasePath, getAPIKey } from "@/lib/api";
 
 type NavItem = {
   to: string;
@@ -21,6 +20,7 @@ const navItems: NavItem[] = [
   { to: "/fp-tuner", label: "FP Tuner", hint: "propose and apply exclusions" },
   { to: "/cache", label: "Cache Rules", hint: "edge cache behavior" },
   { to: "/proxy-rules", label: "Proxy Rules", hint: "upstream and transport tuning" },
+  { to: "/settings", label: "Settings", hint: "admin preferences and API key" },
 ];
 
 function isActive(pathname: string, to: string) {
@@ -30,11 +30,7 @@ function isActive(pathname: string, to: string) {
 export default function Layout() {
   const { pathname } = useLocation();
   const current = navItems.find((item) => isActive(pathname, item.to));
-  const [apiKey, setApiKeyState] = useState(() => getAPIKey());
-
-  useEffect(() => {
-    setAPIKey(apiKey);
-  }, [apiKey]);
+  const hasAPIKey = getAPIKey().length > 0;
 
   return (
     <div className="app-shell">
@@ -64,25 +60,11 @@ export default function Layout() {
             <p className="app-kicker">Current Panel</p>
             <h2>{current?.label ?? "Dashboard"}</h2>
           </div>
-          <div className="app-top-meta" style={{ alignItems: "flex-end" }}>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "#6b7280" }}>X-API-Key</span>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKeyState(e.target.value)}
-                placeholder="paste admin API key"
-                style={{
-                  fontSize: 12,
-                  padding: "6px 8px",
-                  minWidth: 220,
-                  borderRadius: 8,
-                  border: "1px solid #d4d4d8",
-                  background: "#fff",
-                }}
-              />
-            </label>
+          <div className="app-top-meta">
             <span className="app-pill">Admin UI</span>
+            <span className={hasAPIKey ? "app-pill app-pill-ok" : "app-pill app-pill-warn"}>
+              API key {hasAPIKey ? "configured" : "not set"}
+            </span>
             <code>{getAPIBasePath()}</code>
             <code>{pathname}</code>
           </div>

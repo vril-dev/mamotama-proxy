@@ -12,6 +12,7 @@ import BotDefensePanel from './pages/BotDefensePanel';
 import SemanticPanel from './pages/SemanticPanel';
 import FPTunerPanel from './pages/FPTunerPanel';
 import ProxyRulesPanel from './pages/ProxyRulesPanel';
+import SettingsPanel from './pages/SettingsPanel';
 
 function App() {
   return (
@@ -31,6 +32,7 @@ function App() {
           <Route path="fp-tuner" element={<FPTunerPanel />} />
           <Route path="cache" element={<CacheRulePanel />} />
           <Route path="proxy-rules" element={<ProxyRulesPanel />} />
+          <Route path="settings" element={<SettingsPanel />} />
         </Route>
       </Routes>
     </BrowserRouter>
