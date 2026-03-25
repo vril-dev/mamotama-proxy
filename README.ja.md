@@ -4,7 +4,7 @@ Coraza + CRS WAFプロジェクト
 
 [English](README.md) | [日本語](README.ja.md)
 
-![管理画面トップ](docs/images/admin-dashboard-overview.png)
+![管理画面トップ](docs/images/ui-samples/01-status.png)
 
 ## 概要
 
@@ -91,7 +91,7 @@ Coraza + CRS WAFプロジェクト
 管理UIはGoバイナリに埋め込まれて `/mamotama-ui` で配信されます。  
 フロント実装自体は `web/mamotama-admin/` にあり、build後にGoへ埋め込みます。
 
-![管理画面 Dashboard](docs/images/admin-dashboard-overview.png)
+![管理画面 Dashboard](docs/images/ui-samples/01-status.png)
 
 ### 主な画面と機能
 
@@ -112,28 +112,43 @@ Coraza + CRS WAFプロジェクト
 ### 画面キャプチャ
 
 #### Dashboard
-![Dashboard](docs/images/admin-dashboard-overview.png)
+![Dashboard](docs/images/ui-samples/01-status.png)
 
 #### Rules Editor
-![Rules Editor](docs/images/admin-rules-editor.png)
+![Rules Editor](docs/images/ui-samples/03-rules.png)
 
 #### Rule Sets
-![Rule Sets](docs/images/admin-rule-sets.png)
+![Rule Sets](docs/images/ui-samples/04-rule-sets.png)
 
 #### Bypass Rules
-![Bypass Rules](docs/images/admin-bypass-rules.png)
+![Bypass Rules](docs/images/ui-samples/05-bypass-rules.png)
 
 #### Country Block
-![Country Block](docs/images/admin-country-block.png)
+![Country Block](docs/images/ui-samples/06-country-block.png)
 
 #### Rate Limit
-![Rate Limit](docs/images/admin-rate-limit.png)
+![Rate Limit](docs/images/ui-samples/07-rate-limit.png)
 
 #### Cache Rules
-![Cache Rules](docs/images/admin-cache-rules.png)
+![Cache Rules](docs/images/ui-samples/11-cache-rules.png)
 
 #### Logs
-![Logs](docs/images/admin-logs.png)
+![Logs](docs/images/ui-samples/02-logs.png)
+
+#### Bot Defense
+![Bot Defense](docs/images/ui-samples/08-bot-defense.png)
+
+#### Semantic Security
+![Semantic Security](docs/images/ui-samples/09-semantic-security.png)
+
+#### FP Tuner
+![FP Tuner](docs/images/ui-samples/10-fp-tuner.png)
+
+#### Proxy Rules
+![Proxy Rules](docs/images/ui-samples/12-proxy-rules.png)
+
+#### Settings
+![Settings](docs/images/ui-samples/13-settings.png)
 
 ### ライブラリ
 
@@ -154,7 +169,7 @@ make compose-up
 ```
 
 起動後、管理UIは `http://localhost:${CORAZA_PORT:-9090}/mamotama-ui` で開けます。  
-UIヘッダの API キー入力欄には `data/conf/config.json` の `admin.api_key_primary` を入力して利用してください。
+`Settings` 画面の API キー入力欄に `data/conf/config.json` の `admin.api_key_primary` を設定して利用してください。
 
 ### Makeショートカット
 

@@ -170,6 +170,18 @@ select {
   font-weight: 600;
 }
 
+.app-pill-ok {
+  border-color: #9ddccf;
+  background: #d8f0e8;
+  color: #0d5b4f;
+}
+
+.app-pill-warn {
+  border-color: #f0c893;
+  background: #fff2df;
+  color: #89551f;
+}
+
 .app-top-meta code {
   border: 1px solid var(--edge);
   border-radius: 999px;
