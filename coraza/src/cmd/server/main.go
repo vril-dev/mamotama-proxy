@@ -16,6 +16,9 @@ import (
 
 func main() {
 	config.LoadEnv()
+	if err := handler.InitProxyRuntime(config.ProxyConfigFile, config.ProxyRollbackMax); err != nil {
+		log.Fatalf("[FATAL] failed to initialize proxy runtime: %v", err)
+	}
 	if err := handler.InitLogsStatsStoreWithBackend(
 		config.StorageBackend,
 		config.DBDriver,
@@ -28,6 +31,9 @@ func main() {
 		log.Printf("[DB][INIT] db store enabled (backend=%s driver=%s path=%s retention_days=%d)", config.StorageBackend, config.DBDriver, config.DBPath, config.DBRetentionDays)
 	} else {
 		log.Printf("[DB][INIT] storage backend=%s", config.StorageBackend)
+	}
+	if err := handler.SyncProxyStorage(); err != nil {
+		log.Printf("[PROXY][DB][WARN] sync failed (fallback=file): %v", err)
 	}
 	if err := handler.SyncRuleFilesStorage(); err != nil {
 		log.Printf("[RULES][DB][WARN] sync failed (fallback=file): %v", err)
@@ -72,7 +78,8 @@ func main() {
 		log.Printf("[SEMANTIC][INIT] loaded")
 	}
 
-	log.Println("[INFO] WAF upstream target:", config.AppURL)
+	_, _, proxyCfg, _, _ := handler.ProxyRulesSnapshot()
+	log.Println("[INFO] WAF upstream target:", proxyCfg.UpstreamURL)
 
 	r := gin.Default()
 
@@ -90,7 +97,7 @@ func main() {
 		r.Use(cors.New(cors.Config{
 			AllowOrigins: config.APICORSOrigins,
 			AllowMethods: []string{"GET", "POST", "PUT", "OPTIONS"},
-			AllowHeaders: []string{"Origin", "Content-Type", "Accept", "X-API-Key"},
+			AllowHeaders: []string{"Origin", "Content-Type", "Accept", "X-API-Key", "If-Match"},
 		}))
 		log.Printf("[SECURITY] CORS enabled for origins: %s", strings.Join(config.APICORSOrigins, ","))
 	} else {
@@ -113,6 +120,10 @@ func main() {
 					config.APIBasePath + "/rate-limit-rules",
 					config.APIBasePath + "/bot-defense-rules",
 					config.APIBasePath + "/semantic-rules",
+					config.APIBasePath + "/proxy-rules",
+					config.APIBasePath + "/proxy-rules:validate",
+					config.APIBasePath + "/proxy-rules:probe",
+					config.APIBasePath + "/proxy-rules:rollback",
 					config.APIBasePath + "/fp-tuner/propose",
 					config.APIBasePath + "/fp-tuner/apply",
 					config.APIBasePath + "/logs/read",
@@ -150,9 +161,14 @@ func main() {
 		api.GET("/semantic-rules", handler.GetSemanticRules)
 		api.POST("/semantic-rules:validate", handler.ValidateSemanticRules)
 		api.PUT("/semantic-rules", handler.PutSemanticRules)
+		api.GET("/proxy-rules", handler.GetProxyRules)
+		api.POST("/proxy-rules:action", handler.ProxyRulesAction)
+		api.PUT("/proxy-rules", handler.PutProxyRules)
 		api.POST("/fp-tuner/propose", handler.ProposeFPTuning)
 		api.POST("/fp-tuner/apply", handler.ApplyFPTuning)
 	}
+
+	handler.RegisterAdminUIRoutes(r)
 
 	r.NoRoute(func(c *gin.Context) {
 		p := c.Request.URL.Path

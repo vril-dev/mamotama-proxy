@@ -57,7 +57,8 @@ Coraza + CRS WAFプロジェクト
 | --- | --- | --- |
 | `WAF_LISTEN_ADDR` | `:9090` | Corazaシングルバイナリサービスの待受アドレス。 |
 | `WAF_LISTEN_PORT` | `9090` | Compose で使うコンテナ側待受ポート（`ports` / healthcheck / GoTestWAF ターゲット）。`WAF_LISTEN_ADDR` のポートと揃えてください。 |
-| `WAF_APP_URL` | `http://host.docker.internal:3000` | 透過先アプリの URL（ALB/ECS 等の本番では適宜変更）。 |
+| `WAF_PROXY_CONFIG_FILE` | `conf/proxy.json` | 必須のProxy設定JSONパス。欠落/不正なら起動失敗。 |
+| `WAF_PROXY_ROLLBACK_HISTORY_SIZE` | `8` | `/proxy-rules:rollback` で使うメモリ上ロールバック履歴件数（`1..64`）。 |
 | `WAF_LOG_FILE` | (空) | WAFログの出力先。未設定なら標準出力。 |
 | `WAF_BYPASS_FILE` | `conf/waf.bypass` | バイパス/特別ルール定義ファイルのパス。 |
 | `WAF_BOT_DEFENSE_FILE` | `conf/bot-defense.conf` | Bot defense challenge 設定ファイル（JSON）。管理画面から編集可能。 |
@@ -93,13 +94,7 @@ Coraza + CRS WAFプロジェクト
 | `WAF_API_CORS_ALLOWED_ORIGINS` | `https://admin.example.com,http://localhost:5173` | CORSを許可する Origin 一覧（カンマ区切り）。未設定なら CORS 無効（同一オリジンのみ）。 |
 | `WAF_ALLOW_INSECURE_DEFAULTS` | (空) | 弱いAPIキーや認証無効化を許可する開発用フラグ。本番では設定しない。 |
 
-### 管理UI（React / Vite）
-
-| 変数名 | 例 | 説明 |
-| --- | --- | --- |
-| `VITE_CORAZA_API_BASE` | `http://localhost/mamotama-api` | ブラウザから叩く API のフル/相対ベース。リバースプロキシの都合に合わせて指定。 |
-| `VITE_APP_BASE_PATH` | `/mamotama-admin` | 管理UIのルートパス（`react-router` の basename）。 |
-| `VITE_API_KEY` | `…` | 管理UIが API へ付与する `X-API-Key`。通常は `WAF_API_KEY_PRIMARY` と同値。 |
+### 管理UI
 
 起動時に `WAF_API_KEY_PRIMARY` が短すぎる/既知の弱い値の場合、Corazaプロセスは安全側で起動失敗します。  
 ローカル検証だけ一時的に緩和したい場合は `WAF_ALLOW_INSECURE_DEFAULTS=1` を利用してください。
@@ -108,7 +103,8 @@ Coraza + CRS WAFプロジェクト
 
 ## 管理ダッシュボード
 
-`web/mamotama-admin/` 以下には、React + Vite による管理UIが含まれています。
+管理UIはGoバイナリに埋め込まれて `/mamotama-ui` で配信されます。  
+フロント実装自体は `web/mamotama-admin/` にあり、build後にGoへ埋め込みます。
 
 ![管理画面 Dashboard](docs/images/admin-dashboard-overview.png)
 
@@ -126,6 +122,7 @@ Coraza + CRS WAFプロジェクト
 | `/bot-defense` | Bot defense設定の閲覧・編集（bot-defense.conf を直接操作） |
 | `/semantic` | Semantic Security設定の閲覧・編集（semantic.conf を直接操作） |
 | `/cache-rules` | Cache Rules の可視化・編集（cache.conf の表編集／Raw編集、Validate/Save対応） |
+| `/proxy-rules` | 上流URL・Transport設定の検証/プローブ/更新/ロールバック（`conf/proxy.json`） |
 
 ### 画面キャプチャ
 
@@ -168,11 +165,11 @@ Coraza + CRS WAFプロジェクト
 ```bash
 ./scripts/install_crs.sh
 docker compose build coraza
-docker compose up web
 docker compose up -d coraza
 ```
 
-環境変数 `.env` に `VITE_APP_BASE_PATH` および `VITE_CORAZA_API_BASE` を定義することで、ルートパスを変更できます。
+起動後、管理UIは `http://localhost:${CORAZA_PORT:-9090}/mamotama-ui` で開けます。  
+UIヘッダの API キー入力欄に `WAF_API_KEY_PRIMARY` を設定して利用してください。
 
 #### 任意: 旧ログディレクトリの移行
 
@@ -583,7 +580,7 @@ DENY regex=^/users/[0-9]+/profile
 ## 管理画面のアクセス制限について
 
 本プロジェクトにはデフォルトでアクセス制限機能は含まれていません。  
-管理画面（`VITE_APP_BASE_PATH` で公開されるパス）を利用する場合は、必ず Basic 認証や IP 制限などのアクセス制御を設定してください。
+管理画面（`/mamotama-ui`）を利用する場合は、必ず Basic 認証や IP 制限などのアクセス制御を設定してください。
 
 ---
 

@@ -11,7 +11,9 @@ import (
 )
 
 var (
-	AppURL           string
+	ProxyConfigFile  string
+	UIBasePath       string
+	ProxyRollbackMax int
 	ListenAddr       string
 	RulesFile        string
 	BypassFile       string
@@ -55,7 +57,12 @@ var (
 func LoadEnv() {
 	_ = godotenv.Load()
 
-	AppURL = os.Getenv("WAF_APP_URL")
+	ProxyConfigFile = strings.TrimSpace(os.Getenv("WAF_PROXY_CONFIG_FILE"))
+	if ProxyConfigFile == "" {
+		ProxyConfigFile = "conf/proxy.json"
+	}
+	UIBasePath = "/mamotama-ui"
+	ProxyRollbackMax = parseProxyRollbackHistorySize(os.Getenv("WAF_PROXY_ROLLBACK_HISTORY_SIZE"))
 	ListenAddr = parseListenAddr(os.Getenv("WAF_LISTEN_ADDR"))
 	RulesFile = os.Getenv("WAF_RULES_FILE")
 	BypassFile = os.Getenv("WAF_BYPASS_FILE")
@@ -289,4 +296,15 @@ func parseListenAddr(v string) string {
 		return ":" + s
 	}
 	return s
+}
+
+func parseProxyRollbackHistorySize(v string) int {
+	n := parseIntDefault(v, 8)
+	if n < 1 {
+		return 1
+	}
+	if n > 64 {
+		return 64
+	}
+	return n
 }

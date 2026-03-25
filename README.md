@@ -56,7 +56,8 @@ You can control behavior via `.env`.
 | --- | --- | --- |
 | `WAF_LISTEN_ADDR` | `:9090` | Listen address for Coraza single-binary service. |
 | `WAF_LISTEN_PORT` | `9090` | Container-side listen port used by Compose (`ports`, healthcheck, GoTestWAF target). Keep this aligned with `WAF_LISTEN_ADDR` port. |
-| `WAF_APP_URL` | `http://host.docker.internal:3000` | Upstream application URL (change appropriately for production such as ALB/ECS). |
+| `WAF_PROXY_CONFIG_FILE` | `conf/proxy.json` | Mandatory proxy configuration JSON path. Proxy runtime fails fast if this file is missing/invalid. |
+| `WAF_PROXY_ROLLBACK_HISTORY_SIZE` | `8` | In-memory rollback history depth for `/proxy-rules:rollback` (range: `1..64`). |
 | `WAF_LOG_FILE` | (empty) | WAF log output destination. If empty, stdout is used. |
 | `WAF_BYPASS_FILE` | `conf/waf.bypass` | Path for bypass/special-rule definition file. |
 | `WAF_BOT_DEFENSE_FILE` | `conf/bot-defense.conf` | Bot-defense challenge settings file (JSON), editable from admin UI. |
@@ -92,13 +93,7 @@ You can control behavior via `.env`.
 | `WAF_API_CORS_ALLOWED_ORIGINS` | `https://admin.example.com,http://localhost:5173` | Allowed CORS origins (comma-separated). If empty, CORS is disabled (same-origin only). |
 | `WAF_ALLOW_INSECURE_DEFAULTS` | (empty) | Dev-only flag to allow weak API keys or disabled auth. Do not set in production. |
 
-### Admin UI (React / Vite)
-
-| Variable | Example | Description |
-| --- | --- | --- |
-| `VITE_CORAZA_API_BASE` | `http://localhost/mamotama-api` | Full/relative API base path used by browser-side calls. |
-| `VITE_APP_BASE_PATH` | `/mamotama-admin` | Admin UI root path (`react-router` basename). |
-| `VITE_API_KEY` | `...` | API key attached by admin UI (`X-API-Key`). Usually same as `WAF_API_KEY_PRIMARY`. |
+### Admin UI
 
 At startup, if `WAF_API_KEY_PRIMARY` is too short or known-weak, Coraza fails to start in secure mode.
 For local testing only, you can temporarily relax this with `WAF_ALLOW_INSECURE_DEFAULTS=1`.
@@ -107,7 +102,8 @@ For local testing only, you can temporarily relax this with `WAF_ALLOW_INSECURE_
 
 ## Admin Dashboard
 
-`web/mamotama-admin/` contains the admin UI built with React + Vite.
+Admin UI is served by the Go binary at `/mamotama-ui` (embedded static assets).
+You can still edit source under `web/mamotama-admin/` and rebuild assets for embedding.
 
 ![Admin Dashboard](docs/images/admin-dashboard-overview.png)
 
@@ -125,6 +121,7 @@ For local testing only, you can temporarily relax this with `WAF_ALLOW_INSECURE_
 | `/bot-defense` | View/edit bot-defense config directly (`bot-defense.conf`) |
 | `/semantic` | View/edit semantic security config directly (`semantic.conf`) |
 | `/cache-rules` | Visual + raw editing for cache rules (`cache.conf`), with Validate/Save |
+| `/proxy-rules` | View/validate/probe/update/rollback upstream + transport tuning (`conf/proxy.json`) |
 
 ### Screenshots
 
@@ -167,11 +164,11 @@ For local testing only, you can temporarily relax this with `WAF_ALLOW_INSECURE_
 ```bash
 ./scripts/install_crs.sh
 docker compose build coraza
-docker compose up web
 docker compose up -d coraza
 ```
 
-You can change the root path by setting `VITE_APP_BASE_PATH` and `VITE_CORAZA_API_BASE` in `.env`.
+Open the embedded admin UI at `http://localhost:${CORAZA_PORT:-9090}/mamotama-ui`.
+Set API key in UI header (`X-API-Key`) and operate via `/mamotama-api/*`.
 
 #### Optional: Legacy Log Directory Migration
 
@@ -581,7 +578,7 @@ By default this stack does not include an internal HTTP cache layer.
 ## Admin UI Access Restrictions
 
 This project does not include access control by default.
-If you expose admin UI (`VITE_APP_BASE_PATH`), always configure access controls such as Basic Auth and/or IP restrictions.
+If you expose admin UI (`/mamotama-ui`), always configure access controls such as Basic Auth and/or IP restrictions.
 
 ---
 

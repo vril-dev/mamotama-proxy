@@ -117,3 +117,26 @@ func TestParseDBSyncIntervalSec(t *testing.T) {
 		})
 	}
 }
+
+func TestParseProxyRollbackHistorySize(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{in: "", want: 8},
+		{in: "-1", want: 1},
+		{in: "0", want: 1},
+		{in: "1", want: 1},
+		{in: "8", want: 8},
+		{in: "256", want: 64},
+		{in: "abc", want: 8},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.in, func(t *testing.T) {
+			if got := parseProxyRollbackHistorySize(tc.in); got != tc.want {
+				t.Fatalf("parseProxyRollbackHistorySize(%q)=%d want=%d", tc.in, got, tc.want)
+			}
+		})
+	}
+}

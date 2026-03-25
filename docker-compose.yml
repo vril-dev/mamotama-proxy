@@ -26,7 +26,8 @@ services:
       dockerfile: Dockerfile
     environment:
       - WAF_LISTEN_ADDR=${WAF_LISTEN_ADDR:-:${WAF_LISTEN_PORT:-9090}}
-      - WAF_APP_URL=${WAF_APP_URL}
+      - WAF_PROXY_CONFIG_FILE=${WAF_PROXY_CONFIG_FILE:-conf/proxy.json}
+      - WAF_PROXY_ROLLBACK_HISTORY_SIZE=${WAF_PROXY_ROLLBACK_HISTORY_SIZE:-8}
       - WAF_LOG_FILE=${WAF_LOG_FILE}
       - WAF_STRICT_OVERRIDE=${WAF_STRICT_OVERRIDE}
       - WAF_API_BASEPATH=${WAF_API_BASEPATH}
@@ -57,6 +58,7 @@ services:
       - WAF_DB_DSN=${WAF_DB_DSN:-}
       - WAF_DB_PATH=${WAF_DB_PATH:-logs/coraza/mamotama.db}
       - WAF_DB_RETENTION_DAYS=${WAF_DB_RETENTION_DAYS:-30}
+      - WAF_DB_SYNC_INTERVAL_SEC=${WAF_DB_SYNC_INTERVAL_SEC:-0}
       - WAF_ALLOW_INSECURE_DEFAULTS=${WAF_ALLOW_INSECURE_DEFAULTS}
     volumes:
       - ./data/rules:/app/rules
@@ -90,21 +92,6 @@ services:
     volumes:
       - ./data/logs/gotestwaf:/app/reports
     restart: "no"
-  web:
-    image: node:22
-    working_dir: /app
-    command: sh -c "npm install && npm run dev"
-    volumes:
-      - ./web/mamotama-admin:/app
-      - web_node_modules:/app/node_modules
-    ports:
-      - "5173:5173"
-    environment:
-      - VITE_CORAZA_API_BASE=${VITE_CORAZA_API_BASE}
-      - VITE_APP_BASE_PATH=${VITE_APP_BASE_PATH}
-      - VITE_API_KEY=${VITE_API_KEY}
-    restart: unless-stopped
 
 volumes:
-  web_node_modules:
   mysql_data:
