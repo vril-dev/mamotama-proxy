@@ -9,7 +9,7 @@ WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-60}"
 BRIDGE_PORT="${BRIDGE_PORT:-18092}"
 SIMULATE="${SIMULATE:-1}"
 TARGET_PATH="${TARGET_PATH:-rules/mamotama.conf}"
-API_KEY="${API_KEY:-${WAF_API_KEY_PRIMARY:-dev-only-change-this-key-please}}"
+API_KEY="${API_KEY:-}"
 BRIDGE_COMMAND="${BRIDGE_COMMAND:-${ROOT_DIR}/scripts/fp_tuner_provider_cmd_example.sh}"
 AUTO_DOWN="${FP_TUNER_BRIDGE_AUTO_DOWN:-0}"
 
@@ -19,6 +19,10 @@ BRIDGE_LOG="$(mktemp)"
 BRIDGE_REQUEST_LOG="$(mktemp)"
 BRIDGE_PID=""
 COMPOSE_ARGS=(--project-directory "${ROOT_DIR}")
+CONFIG_ENV_FILE="${ROOT_DIR}/.env"
+HOST_CONFIG_FILE=""
+TEMP_CONFIG_CONTAINER_PATH=""
+HOST_TEMP_CONFIG_FILE=""
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -29,9 +33,80 @@ require_cmd() {
 
 compose() {
   PUID="${HOST_PUID}" GUID="${HOST_GUID}" CORAZA_PORT="${HOST_CORAZA_PORT}" \
-  WAF_FP_TUNER_MODE="http" \
-  WAF_FP_TUNER_ENDPOINT="http://host.docker.internal:${BRIDGE_PORT}/propose" \
+  WAF_CONFIG_FILE="${TEMP_CONFIG_CONTAINER_PATH}" \
   docker compose "${COMPOSE_ARGS[@]}" "$@"
+}
+
+read_env_value() {
+  local env_file="$1"
+  local key="$2"
+  if [[ ! -f "${env_file}" ]]; then
+    return 0
+  fi
+  awk -F= -v key="${key}" '
+    $0 ~ "^[[:space:]]*" key "=" {
+      val = $0
+      sub("^[[:space:]]*" key "=", "", val)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+      if (val ~ /^".*"$/ || val ~ /^'\''.*'\''$/) {
+        val = substr(val, 2, length(val)-2)
+      }
+      print val
+      exit
+    }
+  ' "${env_file}"
+}
+
+resolve_host_config_path() {
+  local container_path="$1"
+  local normalized="${container_path#./}"
+  if [[ "${normalized}" == /* ]]; then
+    printf '%s\n' "${normalized}"
+    return 0
+  fi
+  if [[ "${normalized}" == data/* ]]; then
+    printf '%s/%s\n' "${ROOT_DIR}" "${normalized}"
+    return 0
+  fi
+  printf '%s/data/%s\n' "${ROOT_DIR}" "${normalized}"
+}
+
+prepare_fp_tuner_bridge_config() {
+  local config_container_path="${WAF_CONFIG_FILE:-}"
+  local config_dir config_base config_stem endpoint
+
+  if [[ -z "${config_container_path}" ]]; then
+    config_container_path="$(read_env_value "${CONFIG_ENV_FILE}" "WAF_CONFIG_FILE")"
+  fi
+  if [[ -z "${config_container_path}" ]]; then
+    config_container_path="conf/config.json"
+  fi
+
+  HOST_CONFIG_FILE="$(resolve_host_config_path "${config_container_path}")"
+  if [[ ! -f "${HOST_CONFIG_FILE}" ]]; then
+    echo "[fp-tuner-bridge] config file not found: ${HOST_CONFIG_FILE}" >&2
+    exit 1
+  fi
+
+  if [[ -z "${API_KEY}" ]]; then
+    API_KEY="$(jq -r '.admin.api_key_primary // empty' "${HOST_CONFIG_FILE}")"
+  fi
+
+  config_dir="$(dirname "${config_container_path}")"
+  config_base="$(basename "${config_container_path}")"
+  if [[ "${config_base}" == *.json ]]; then
+    config_stem="${config_base%.json}"
+    TEMP_CONFIG_CONTAINER_PATH="${config_dir}/${config_stem}.fp-tuner-bridge.json"
+  else
+    TEMP_CONFIG_CONTAINER_PATH="${config_container_path}.fp-tuner-bridge.json"
+  fi
+  HOST_TEMP_CONFIG_FILE="$(resolve_host_config_path "${TEMP_CONFIG_CONTAINER_PATH}")"
+  mkdir -p "$(dirname "${HOST_TEMP_CONFIG_FILE}")"
+
+  endpoint="http://host.docker.internal:${BRIDGE_PORT}/propose"
+  jq --arg endpoint "${endpoint}" \
+    '.fp_tuner.mode = "http" | .fp_tuner.endpoint = $endpoint' \
+    "${HOST_CONFIG_FILE}" > "${HOST_TEMP_CONFIG_FILE}"
 }
 
 wait_for_http_200() {
@@ -54,6 +129,9 @@ cleanup() {
     wait "${BRIDGE_PID}" >/dev/null 2>&1 || true
   fi
   rm -f "${REQ_FILE}" "${PROPOSE_RESP_FILE}" "${BRIDGE_LOG}" "${BRIDGE_REQUEST_LOG}"
+  if [[ -n "${HOST_TEMP_CONFIG_FILE}" ]]; then
+    rm -f "${HOST_TEMP_CONFIG_FILE}"
+  fi
   if [[ "${AUTO_DOWN}" == "1" ]]; then
     compose down --remove-orphans >/dev/null 2>&1 || true
   fi
@@ -79,6 +157,8 @@ if [[ ! -f "${ROOT_DIR}/.env" ]]; then
     exit 1
   fi
 fi
+
+prepare_fp_tuner_bridge_config
 
 FP_TUNER_BRIDGE_MODE="command" \
 FP_TUNER_BRIDGE_COMMAND="${BRIDGE_COMMAND}" \

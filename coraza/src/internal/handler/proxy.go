@@ -16,6 +16,7 @@ import (
 
 	"mamotama/internal/bypassconf"
 	"mamotama/internal/cacheconf"
+	"mamotama/internal/config"
 	"mamotama/internal/waf"
 )
 
@@ -330,7 +331,7 @@ func emitJSONLog(obj map[string]any) {
 }
 
 func appendEventToFile(obj map[string]any) error {
-	path := os.Getenv("WAF_EVENTS_FILE")
+	path := strings.TrimSpace(config.LogFile)
 	if path == "" {
 		path = "/app/logs/coraza/waf-events.ndjson"
 	}

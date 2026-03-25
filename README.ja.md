@@ -38,7 +38,7 @@ Coraza + CRS WAFプロジェクト
 
 ## 環境変数
 
-`.env` ファイルで挙動を制御可能です。
+`.env` は Docker 実行差分のみを管理します。
 
 ### Docker / ローカル MySQL（任意）
 
@@ -51,62 +51,38 @@ Coraza + CRS WAFプロジェクト
 | `MYSQL_ROOT_PASSWORD` | `mamotama-root` | ローカル MySQL コンテナの root パスワード。 |
 | `MYSQL_TZ` | `UTC` | コンテナのタイムゾーン。 |
 
-### WAF / Go（Coraza ラッパー）
+### Coraza アプリ設定（`data/conf/config.json`）
+
+実行時設定は JSON に集約されています（`edge` と同じ方向性）。
+
+- `.env` は Docker 実行差分（UID/GID、ホストポート、mysql profile、設定ファイルパス）だけを保持します。
+- Coraza 本体の挙動（server/admin/security/storage/fp-tuner/paths）は `data/conf/config.json` で管理します。
+- `data/conf/proxy.json` は引き続き、Proxy転送設定の専用JSONとして運用します。
+
+`config.json` の主なブロック:
+
+| ブロック | 役割 |
+| --- | --- |
+| `server` | 待受、タイムアウト、ヘッダ上限、同時処理上限 |
+| `runtime` | Goランタイム制御（`gomaxprocs`、`memory_limit_mb`） |
+| `admin` | API/UIベースパス、APIキー、CORS、strict/insecure設定 |
+| `paths` | rules/bypass/country/rate/bot/semantic/CRS/proxy のファイルパス |
+| `proxy` | `/proxy-rules:rollback` の履歴保持数 |
+| `crs` | CRS有効化フラグ |
+| `fp_tuner` | モード、接続先、認証、タイムアウト、承認、監査 |
+| `storage` | `file|db`、DBドライバ、dsn/path、保持、同期間隔 |
+
+コンテナ起動時に使う環境変数は最小化:
 
 | 変数名 | 例 | 説明 |
 | --- | --- | --- |
-| `WAF_LISTEN_ADDR` | `:9090` | Corazaシングルバイナリサービスの待受アドレス。 |
-| `WAF_LISTEN_PORT` | `9090` | Compose で使うコンテナ側待受ポート（`ports` / healthcheck / GoTestWAF ターゲット）。`WAF_LISTEN_ADDR` のポートと揃えてください。 |
-| `WAF_SERVER_READ_TIMEOUT_SEC` | `30` | HTTPサーバのリクエスト読み取りタイムアウト秒数（`http.Server.ReadTimeout`）。 |
-| `WAF_SERVER_READ_HEADER_TIMEOUT_SEC` | `5` | HTTPヘッダ読み取りタイムアウト秒数（`http.Server.ReadHeaderTimeout`）。 |
-| `WAF_SERVER_WRITE_TIMEOUT_SEC` | `0` | HTTPレスポンス書き込みタイムアウト秒数（`http.Server.WriteTimeout`）。`0` は無制限。 |
-| `WAF_SERVER_IDLE_TIMEOUT_SEC` | `120` | keep-alive のアイドルタイムアウト秒数（`http.Server.IdleTimeout`）。 |
-| `WAF_SERVER_MAX_HEADER_BYTES` | `1048576` | HTTPヘッダ最大サイズ（`http.Server.MaxHeaderBytes`）。 |
-| `WAF_SERVER_MAX_CONCURRENT_REQUESTS` | `0` | 全体の同時処理中リクエスト上限。`0` で無効。 |
-| `WAF_SERVER_MAX_CONCURRENT_PROXY_REQUESTS` | `0` | Proxy経路（`NoRoute`）専用の同時処理上限。`0` で無効。 |
-| `WAF_RUNTIME_GOMAXPROCS` | `0` | Goスケジューラ並列度の上書き。`0` はランタイム既定。 |
-| `WAF_RUNTIME_MEMORY_LIMIT_MB` | `0` | `runtime/debug.SetMemoryLimit` で指定するプロセスメモリ上限(MB)。`0` で無効。 |
-| `WAF_PROXY_CONFIG_FILE` | `conf/proxy.json` | 必須のProxy設定JSONパス。欠落/不正なら起動失敗。 |
-| `WAF_PROXY_ROLLBACK_HISTORY_SIZE` | `8` | `/proxy-rules:rollback` で使うメモリ上ロールバック履歴件数（`1..64`）。 |
-| `WAF_LOG_FILE` | (空) | WAFログの出力先。未設定なら標準出力。 |
-| `WAF_BYPASS_FILE` | `conf/waf.bypass` | バイパス/特別ルール定義ファイルのパス。 |
-| `WAF_BOT_DEFENSE_FILE` | `conf/bot-defense.conf` | Bot defense challenge 設定ファイル（JSON）。管理画面から編集可能。 |
-| `WAF_SEMANTIC_FILE` | `conf/semantic.conf` | Semanticヒューリスティック設定ファイル（JSON）。管理画面から編集可能。 |
-| `WAF_COUNTRY_BLOCK_FILE` | `conf/country-block.conf` | 国別ブロック定義ファイル（1行1国コード、例: `JP`, `US`, `UNKNOWN`）。 |
-| `WAF_RATE_LIMIT_FILE` | `conf/rate-limit.conf` | レート制限定義ファイル（JSON）。管理画面から編集可能。 |
-| `WAF_RULES_FILE` | `rules/mamotama.conf` | 使用するルールファイル（カンマ区切りで複数指定も可）。 |
-| `WAF_CRS_ENABLE` | `true` | CRSを読み込むかどうか。`false` ならベースルールのみ。 |
-| `WAF_CRS_SETUP_FILE` | `rules/crs/crs-setup.conf` | CRSセットアップ設定ファイル。 |
-| `WAF_CRS_RULES_DIR` | `rules/crs/rules` | CRS本体ルール（`*.conf`）のディレクトリ。 |
-| `WAF_CRS_DISABLED_FILE` | `conf/crs-disabled.conf` | CRS本体の無効化ファイル一覧。1行1ファイル名で指定。 |
-| `WAF_FP_TUNER_MODE` | `mock` | FPチューナーのプロバイダモード。`mock` はフィクスチャ/生成提案、`http` は `WAF_FP_TUNER_ENDPOINT` へPOST。 |
-| `WAF_FP_TUNER_ENDPOINT` | (空) | `http` モード時の外部LLMプロキシのHTTPエンドポイント。 |
-| `WAF_FP_TUNER_API_KEY` | (空) | `WAF_FP_TUNER_ENDPOINT` 向け Bearer トークン。 |
-| `WAF_FP_TUNER_MODEL` | (空) | プロバイダへ渡す任意のモデル識別子。 |
-| `WAF_FP_TUNER_TIMEOUT_SEC` | `15` | プロバイダ呼び出し時のHTTPタイムアウト（秒）。 |
-| `WAF_FP_TUNER_MOCK_RESPONSE_FILE` | `conf/fp-tuner-mock-response.json` | `mock` モードで使うレスポンスフィクスチャのパス。 |
-| `WAF_FP_TUNER_REQUIRE_APPROVAL` | `true` | `simulate=false` の適用時に承認トークンを必須化するか。 |
-| `WAF_FP_TUNER_APPROVAL_TTL_SEC` | `600` | 承認トークンの有効期限（秒）。 |
-| `WAF_FP_TUNER_AUDIT_FILE` | `logs/coraza/fp-tuner-audit.ndjson` | propose/apply 操作の監査ログ出力先。 |
-| `WAF_STORAGE_BACKEND` | `file` | ストレージバックエンド選択。`file` は従来のファイル運用、`db` はDBログストア + 設定/ルールBlob同期を有効化。 |
-| `WAF_DB_DRIVER` | `sqlite` | `WAF_STORAGE_BACKEND=db` 時のDBドライバ。対応値: `sqlite` / `mysql`（ログストア・設定/ルールBlob用途で実装済み）。 |
-| `WAF_DB_ENABLED` | `false` | 互換用フラグ。`WAF_STORAGE_BACKEND` 未指定時のみ参照され、`true` で `db`、`false` で `file` にマップ。 |
-| `WAF_DB_DSN` | (空) | ネットワークDB向けDSN（例: MySQL）。`WAF_DB_DRIVER=mysql` 時は必須。sqliteは `WAF_DB_PATH` を利用。 |
-| `WAF_DB_PATH` | `logs/coraza/mamotama.db` | `WAF_STORAGE_BACKEND=db` かつ `WAF_DB_DRIVER=sqlite` 時に利用するSQLiteファイルパス。 |
-| `WAF_DB_RETENTION_DAYS` | `30` | DBストア `waf_events` の保持日数。これより古い行は同期時に削除。`0` で削除無効（設定Blobは削除対象外）。 |
-| `WAF_DB_SYNC_INTERVAL_SEC` | `0` | DB→実行時設定の定期同期間隔（秒）。`0` で無効、`1` 以上で複数Corazaノード間の定期整合を有効化。 |
-| `WAF_STRICT_OVERRIDE` | `false` | 特別ルール読み込み失敗時の挙動。`true`で即終了、`false`で警告のみ継続。 |
-| `WAF_API_BASEPATH` | `/mamotama-api` | 管理APIのベースパス（Go側のルーティング基準）。 |
-| `WAF_API_KEY_PRIMARY` | `…` | 管理API用の主キー（`X-API-Key`）。 |
-| `WAF_API_KEY_SECONDARY` | (空) | 予備キー（ローテーション時の切替用。未使用なら空でOK）。 |
-| `WAF_API_AUTH_DISABLE` | (空) | 認証無効化フラグ。運用では空（false相当）推奨。テストで無効化したいときのみ truthy 値。 |
-| `WAF_API_CORS_ALLOWED_ORIGINS` | `https://admin.example.com,http://localhost:5173` | CORSを許可する Origin 一覧（カンマ区切り）。未設定なら CORS 無効（同一オリジンのみ）。 |
-| `WAF_ALLOW_INSECURE_DEFAULTS` | (空) | 弱いAPIキーや認証無効化を許可する開発用フラグ。本番では設定しない。 |
+| `WAF_CONFIG_FILE` | `conf/config.json` | 起動時に読み込むアプリ設定JSON。 |
+| `WAF_LISTEN_PORT` | `9090` | Composeのポート/healthcheck/GoTestWAF用。`config.json` の `server.listen_addr` と揃えてください。 |
 
 ### 管理UI
 
-起動時に `WAF_API_KEY_PRIMARY` が短すぎる/既知の弱い値の場合、Corazaプロセスは安全側で起動失敗します。  
-ローカル検証だけ一時的に緩和したい場合は `WAF_ALLOW_INSECURE_DEFAULTS=1` を利用してください。
+起動時に `admin.api_key_primary` が短すぎる/既知の弱い値の場合、Corazaプロセスは安全側で起動失敗します。  
+ローカル検証だけ一時的に緩和したい場合は `admin.allow_insecure_defaults=true` を利用してください。
 
 ---
 
@@ -178,7 +154,7 @@ make compose-up
 ```
 
 起動後、管理UIは `http://localhost:${CORAZA_PORT:-9090}/mamotama-ui` で開けます。  
-UIヘッダの API キー入力欄に `WAF_API_KEY_PRIMARY` を設定して利用してください。
+UIヘッダの API キー入力欄には `data/conf/config.json` の `admin.api_key_primary` を入力して利用してください。
 
 ### Makeショートカット
 
@@ -200,7 +176,7 @@ make compose-down
 ./scripts/migrate_proxy_config.sh --check
 ```
 
-デフォルトでは `.env` を読み取り、`WAF_PROXY_CONFIG_FILE=conf/proxy.json` をホスト側の `data/conf/proxy.json` に解決します。
+デフォルトでは `.env` を読み取り、ホスト側の `data/conf/proxy.json` を対象に変換します。
 
 #### 任意: ローカル MySQL コンテナ（profile: `mysql`）
 
@@ -210,9 +186,9 @@ make compose-down
 docker compose --profile mysql up -d mysql
 ```
 
-MySQL をDBログ/設定運用で使う場合は、`WAF_STORAGE_BACKEND=db`・`WAF_DB_DRIVER=mysql`・`WAF_DB_DSN`（例: `mamotama:mamotama@tcp(mysql:3306)/mamotama?charset=utf8mb4&parseTime=true`）を設定してください。
+MySQL をDBログ/設定運用で使う場合は、`data/conf/config.json` の `storage.backend=db`・`storage.db_driver=mysql`・`storage.db_dsn`（例: `mamotama:mamotama@tcp(mysql:3306)/mamotama?charset=utf8mb4&parseTime=true`）を設定してください。
 
-複数ノード運用では `WAF_DB_SYNC_INTERVAL_SEC`（例: `10`）を設定すると、各ノードが `config_blobs` から定期的に実行時ファイルを同期し、内容差分がある場合のみ reload します。
+複数ノード運用では `storage.db_sync_interval_sec`（例: `10`）を設定すると、各ノードが `config_blobs` から定期的に実行時ファイルを同期し、内容差分がある場合のみ reload します。
 
 スケールアウト運用では、共有MySQLを使う `db + mysql` を標準構成にしてください。`file` と `db + sqlite` は基本的に単一ノード運用/ローカル検証向けです。
 
@@ -320,7 +296,8 @@ SIMULATE=0 ./scripts/test_fp_tuner_mock.sh
 このスクリプトは次を自動実行します:
 
 - `127.0.0.1:${MOCK_PROVIDER_PORT:-18091}` に一時的なプロバイダスタブを起動
-- `WAF_FP_TUNER_MODE=http` で `coraza` を起動/再ビルド
+- `data/conf/config.json` を元に `fp_tuner.mode=http` と endpoint を上書きした一時設定を生成
+- `WAF_CONFIG_FILE=<一時設定>` で `coraza` を起動/再ビルド
 - `propose` / `apply` の契約を確認
 - 外部送信前にマスキング済みペイロードであることを検証
 
@@ -441,7 +418,7 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 
 ### バイパスファイルの指定
 
-環境変数 `WAF_BYPASS_FILE` で除外・特別ルール定義ファイルを指定します。デフォルトは `conf/waf.bypass` です。
+`data/conf/config.json` の `paths.bypass_file` で除外・特別ルール定義ファイルを指定します。デフォルトは `conf/waf.bypass` です。
 
 ### ファイル記述形式
 
@@ -464,13 +441,13 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 
 ### 国別ブロック設定
 
-管理ダッシュボード `/country-block` から、`WAF_COUNTRY_BLOCK_FILE`（既定: `conf/country-block.conf`）を編集できます。  
+管理ダッシュボード `/country-block` から、`paths.country_block_file`（既定: `conf/country-block.conf`）を編集できます。  
 1行に1つの国コードを記述します（例: `JP`, `US`, `UNKNOWN`）。  
 該当する国コードのアクセスは WAF 前段で `403` になります。
 
 ### レート制限設定
 
-管理ダッシュボード `/rate-limit` から、`WAF_RATE_LIMIT_FILE`（既定: `conf/rate-limit.conf`）を編集できます。  
+管理ダッシュボード `/rate-limit` から、`paths.rate_limit_file`（既定: `conf/rate-limit.conf`）を編集できます。  
 設定は JSON 形式で、`default_policy` と `rules` を管理します。  
 超過時は `action.status`（通常 `429`）を返し、`Retry-After` ヘッダを付与します。
 
@@ -504,7 +481,7 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 
 ### Bot Defense 設定
 
-管理ダッシュボード `/bot-defense` から、`WAF_BOT_DEFENSE_FILE`（既定: `conf/bot-defense.conf`）を編集できます。  
+管理ダッシュボード `/bot-defense` から、`paths.bot_defense_file`（既定: `conf/bot-defense.conf`）を編集できます。  
 有効時は、対象パスの GET リクエストに対して（`mode` に応じて）challenge レスポンスを返し、通過後に通常処理へ進みます。
 
 #### JSONパラメータ早見表
@@ -523,7 +500,7 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 
 ### Semantic Security 設定
 
-管理ダッシュボード `/semantic` から、`WAF_SEMANTIC_FILE`（既定: `conf/semantic.conf`）を編集できます。  
+管理ダッシュボード `/semantic` から、`paths.semantic_file`（既定: `conf/semantic.conf`）を編集できます。  
 これは機械学習ではなくルールベースのヒューリスティック検知で、`off | log_only | challenge | block` の段階制御に対応します。
 
 #### JSONパラメータ早見表
@@ -540,21 +517,21 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 
 ### ルールファイル編集（複数対応）
 
-管理ダッシュボード `/rules` では、アクティブなベースルールセットを選択して編集できます（`WAF_RULES_FILE` と、CRS有効時は `crs-setup.conf` + 有効化されている `WAF_CRS_RULES_DIR` の `*.conf`）。  
+管理ダッシュボード `/rules` では、アクティブなベースルールセットを選択して編集できます（`paths.rules_file` と、CRS有効時は `paths.crs_setup_file` + 有効化されている `paths.crs_rules_dir` の `*.conf`）。  
 保存時はサーバ側で構文検証した後に反映され、Coraza のベースルールセットをホットリロードします。  
 リロード失敗時は自動でロールバックされます。
 
 ### CRSルールセット切替
 
 管理ダッシュボード `/rule-sets` では、`rules/crs/rules/*.conf` の各ファイルを有効/無効で切り替えられます。  
-状態は `WAF_CRS_DISABLED_FILE` に保存され、保存時にWAFをホットリロードします。
+状態は `paths.crs_disabled_file` に保存され、保存時にWAFをホットリロードします。
 
 ### 優先順位
 
 * 特別ルールが優先されます（同じパスにバイパス設定があっても無視）
 * ルールファイルが存在しない場合
 
-  * `WAF_STRICT_OVERRIDE=true` のときは即時強制終了（log.Fatalf）
+  * `admin.strict_override=true` のときは即時強制終了（log.Fatalf）
   * `false` または未設定時はログ出力して通常ルールで処理継続
 
 ### 例
@@ -586,7 +563,7 @@ curl -s -H "X-API-Key: <your-api-key>" \
 * country: 国コード（例: `JP`, `US`, `UNKNOWN`。未指定または`ALL`で全件）
   * Cloudflare配下では `CF-IPCountry` ヘッダを利用します。未取得時は `UNKNOWN` になります。
 
-API キーは .env で設定した API_KEY を使用してください。
+API キーは `data/conf/config.json` の `admin.api_key_primary`（または `admin.api_key_secondary`）を使用してください。
 実運用環境ではアクセス制限や認証を必ず設定してください。
 
 ## キャッシュ機能
@@ -657,7 +634,7 @@ GitHub Actions の `ci` ワークフローで以下を検証します。
 - `docker compose config` の妥当性確認
 - MySQL ログストア統合テスト（`docker compose --profile mysql up -d mysql` + `go test ./internal/handler -run TestLogsStatsMySQLStoreAggregatesAndIngestsIncrementally`）
 - Proxy管理スモーク（`./scripts/ci_proxy_admin_smoke.sh`: 埋め込みUI + `proxy-rules` validate/probe/PUT/rollback + ETag競合）
-- `./scripts/run_gotestwaf.sh`（`waf-test` マトリクス、`MIN_BLOCKED_RATIO=70`、`WAF_DB_ENABLED=false/true`）
+- `./scripts/run_gotestwaf.sh`（`waf-test` マトリクス、`MIN_BLOCKED_RATIO=70`、`storage.backend=file/db`）
 
 運用では、以下をブランチ保護の Required Checks に設定してください。
 

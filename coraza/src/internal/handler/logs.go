@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"mamotama/internal/config"
 )
 
 var (
@@ -466,7 +468,13 @@ func buildHourlySeries(start, end time.Time, counts map[int64]int) []statsSeries
 }
 
 func resolveLogPath(src, current string) string {
-	if src == "waf" || current == "" {
+	if src == "waf" {
+		if p := strings.TrimSpace(config.LogFile); p != "" {
+			return p
+		}
+		return current
+	}
+	if current == "" {
 		return current
 	}
 	if _, err := os.Stat(current); err == nil {

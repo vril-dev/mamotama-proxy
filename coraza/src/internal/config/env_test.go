@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestIsWeakAPIKey(t *testing.T) {
 	cases := []struct {
@@ -222,5 +226,55 @@ func TestParseRuntimeCaps(t *testing.T) {
 	}
 	if got := parseRuntimeMemoryLimitMB("9999999"); got != 1024*1024 {
 		t.Fatalf("parseRuntimeMemoryLimitMB(9999999)=%d want=%d", got, 1024*1024)
+	}
+}
+
+func TestLoadAppConfigFile(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	raw := `{
+		"server": {"listen_addr": ":18090"},
+		"admin": {
+			"api_base_path": "/mamotama-api",
+			"ui_base_path": "/mamotama-ui",
+			"api_key_primary": "very-strong-random-api-key-12345"
+		},
+		"paths": {
+			"proxy_config_file": "conf/proxy.json",
+			"rules_file": "rules/mamotama.conf"
+		},
+		"proxy": {"rollback_history_size": 8},
+		"fp_tuner": {"mode": "mock", "timeout_sec": 15, "approval_ttl_sec": 600},
+		"storage": {"backend": "file", "db_driver": "sqlite"}
+	}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := loadAppConfigFile(cfgPath)
+	if err != nil {
+		t.Fatalf("loadAppConfigFile returned error: %v", err)
+	}
+	if cfg.Server.ListenAddr != ":18090" {
+		t.Fatalf("unexpected listen_addr: %s", cfg.Server.ListenAddr)
+	}
+	if cfg.Paths.ProxyConfigFile != "conf/proxy.json" {
+		t.Fatalf("unexpected proxy_config_file: %s", cfg.Paths.ProxyConfigFile)
+	}
+}
+
+func TestLoadAppConfigFileRejectsInvalid(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	raw := `{
+		"server": {"listen_addr": ":9090"},
+		"admin": {"api_base_path": "/", "ui_base_path": "/mamotama-ui"},
+		"paths": {"proxy_config_file": "conf/proxy.json", "rules_file": "rules/mamotama.conf"},
+		"proxy": {"rollback_history_size": 8},
+		"fp_tuner": {"mode": "mock", "timeout_sec": 15, "approval_ttl_sec": 600},
+		"storage": {"backend": "file", "db_driver": "sqlite"}
+	}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := loadAppConfigFile(cfgPath); err == nil {
+		t.Fatal("expected validation error, got nil")
 	}
 }

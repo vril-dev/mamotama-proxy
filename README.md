@@ -37,7 +37,7 @@ Edit `data/rules/crs/crs-setup.conf` as needed (for example, paranoia level and 
 
 ## Environment Variables
 
-You can control behavior via `.env`.
+Use `.env` only for Docker runtime wiring.
 
 ### Docker / Local MySQL (Optional)
 
@@ -50,62 +50,38 @@ You can control behavior via `.env`.
 | `MYSQL_ROOT_PASSWORD` | `mamotama-root` | Root password for local MySQL container. |
 | `MYSQL_TZ` | `UTC` | Container timezone. |
 
-### WAF / Go (Coraza Wrapper)
+### Coraza App Config (`data/conf/config.json`)
+
+Runtime configuration is now centralized in JSON (`edge` style).
+
+- Docker keeps only runtime/environment wiring in `.env` (UID/GID, host ports, mysql profile vars, config path).
+- Coraza app behavior (server/admin/security/storage/fp-tuner/paths) is controlled by `data/conf/config.json`.
+- `data/conf/proxy.json` remains the dedicated live-updated proxy transport config.
+
+Main blocks in `config.json`:
+
+| Block | Purpose |
+| --- | --- |
+| `server` | listen address, timeout values, max header size, concurrency caps |
+| `runtime` | Go runtime caps (`gomaxprocs`, `memory_limit_mb`) |
+| `admin` | API/UI base paths, API keys, CORS, strict/insecure toggles |
+| `paths` | file locations for rules/bypass/country/rate/bot/semantic/CRS/proxy |
+| `proxy` | rollback history size for `/proxy-rules:rollback` |
+| `crs` | CRS enable flag |
+| `fp_tuner` | provider mode/endpoint/auth/timeout/approval/audit settings |
+| `storage` | backend (`file|db`), DB driver/path/dsn/retention/sync interval |
+
+Container startup uses only:
 
 | Variable | Example | Description |
 | --- | --- | --- |
-| `WAF_LISTEN_ADDR` | `:9090` | Listen address for Coraza single-binary service. |
-| `WAF_LISTEN_PORT` | `9090` | Container-side listen port used by Compose (`ports`, healthcheck, GoTestWAF target). Keep this aligned with `WAF_LISTEN_ADDR` port. |
-| `WAF_SERVER_READ_TIMEOUT_SEC` | `30` | HTTP server read timeout in seconds (`http.Server.ReadTimeout`). |
-| `WAF_SERVER_READ_HEADER_TIMEOUT_SEC` | `5` | HTTP server header read timeout in seconds (`http.Server.ReadHeaderTimeout`). |
-| `WAF_SERVER_WRITE_TIMEOUT_SEC` | `0` | HTTP server write timeout in seconds (`http.Server.WriteTimeout`). `0` keeps unlimited write timeout. |
-| `WAF_SERVER_IDLE_TIMEOUT_SEC` | `120` | HTTP keep-alive idle timeout in seconds (`http.Server.IdleTimeout`). |
-| `WAF_SERVER_MAX_HEADER_BYTES` | `1048576` | Maximum header bytes accepted by server (`http.Server.MaxHeaderBytes`). |
-| `WAF_SERVER_MAX_CONCURRENT_REQUESTS` | `0` | Global in-flight request cap. `0` disables global concurrency guard. |
-| `WAF_SERVER_MAX_CONCURRENT_PROXY_REQUESTS` | `0` | Proxy path (`NoRoute`) in-flight request cap. `0` disables proxy-specific guard. |
-| `WAF_RUNTIME_GOMAXPROCS` | `0` | Override Go scheduler parallelism. `0` keeps runtime default. |
-| `WAF_RUNTIME_MEMORY_LIMIT_MB` | `0` | Process memory limit in MB via `runtime/debug.SetMemoryLimit`. `0` disables override. |
-| `WAF_PROXY_CONFIG_FILE` | `conf/proxy.json` | Mandatory proxy configuration JSON path. Proxy runtime fails fast if this file is missing/invalid. |
-| `WAF_PROXY_ROLLBACK_HISTORY_SIZE` | `8` | In-memory rollback history depth for `/proxy-rules:rollback` (range: `1..64`). |
-| `WAF_LOG_FILE` | (empty) | WAF log output destination. If empty, stdout is used. |
-| `WAF_BYPASS_FILE` | `conf/waf.bypass` | Path for bypass/special-rule definition file. |
-| `WAF_BOT_DEFENSE_FILE` | `conf/bot-defense.conf` | Bot-defense challenge settings file (JSON), editable from admin UI. |
-| `WAF_SEMANTIC_FILE` | `conf/semantic.conf` | Semantic heuristic scoring settings file (JSON), editable from admin UI. |
-| `WAF_COUNTRY_BLOCK_FILE` | `conf/country-block.conf` | Country block definition file (one country code per line, e.g. `JP`, `US`, `UNKNOWN`). |
-| `WAF_RATE_LIMIT_FILE` | `conf/rate-limit.conf` | Rate-limit definition file (JSON), editable from admin UI. |
-| `WAF_RULES_FILE` | `rules/mamotama.conf` | Active base rule file(s). Comma-separated multiple files are supported. |
-| `WAF_CRS_ENABLE` | `true` | Whether to load CRS. If `false`, only base rules are used. |
-| `WAF_CRS_SETUP_FILE` | `rules/crs/crs-setup.conf` | CRS setup file path. |
-| `WAF_CRS_RULES_DIR` | `rules/crs/rules` | Directory for CRS core rules (`*.conf`). |
-| `WAF_CRS_DISABLED_FILE` | `conf/crs-disabled.conf` | Disabled CRS core rule list file (one filename per line). |
-| `WAF_FP_TUNER_MODE` | `mock` | FP tuner provider mode. `mock` reads fixture or generated suggestion, `http` posts to `WAF_FP_TUNER_ENDPOINT`. |
-| `WAF_FP_TUNER_ENDPOINT` | (empty) | HTTP endpoint for external LLM proxy in `http` mode. |
-| `WAF_FP_TUNER_API_KEY` | (empty) | Bearer token for `WAF_FP_TUNER_ENDPOINT`. |
-| `WAF_FP_TUNER_MODEL` | (empty) | Optional model label passed to provider payload. |
-| `WAF_FP_TUNER_TIMEOUT_SEC` | `15` | HTTP timeout (seconds) for provider calls. |
-| `WAF_FP_TUNER_MOCK_RESPONSE_FILE` | `conf/fp-tuner-mock-response.json` | Mock provider response fixture path used in `mock` mode. |
-| `WAF_FP_TUNER_REQUIRE_APPROVAL` | `true` | Require approval token for non-simulated apply (`/fp-tuner/apply` with `simulate=false`). |
-| `WAF_FP_TUNER_APPROVAL_TTL_SEC` | `600` | Approval token TTL in seconds. |
-| `WAF_FP_TUNER_AUDIT_FILE` | `logs/coraza/fp-tuner-audit.ndjson` | Audit log destination for propose/apply actions. |
-| `WAF_STORAGE_BACKEND` | `file` | Storage backend selector. `file` keeps file-based operation; `db` enables DB-backed log store + config/rule blob sync. |
-| `WAF_DB_DRIVER` | `sqlite` | DB driver when `WAF_STORAGE_BACKEND=db`. Supported: `sqlite`, `mysql` (implemented for log store and config/rule blobs). |
-| `WAF_DB_ENABLED` | `false` | Legacy compatibility flag. If `WAF_STORAGE_BACKEND` is unset, `true` maps to `db` and `false` maps to `file`. |
-| `WAF_DB_DSN` | (empty) | DSN for network DB drivers (for example MySQL). Required when `WAF_DB_DRIVER=mysql`; sqlite uses `WAF_DB_PATH`. |
-| `WAF_DB_PATH` | `logs/coraza/mamotama.db` | SQLite file path used when `WAF_STORAGE_BACKEND=db` and `WAF_DB_DRIVER=sqlite`. |
-| `WAF_DB_RETENTION_DAYS` | `30` | Retention window for `waf_events` in DB store. Entries older than this are pruned on sync. `0` disables pruning (config blobs are not pruned). |
-| `WAF_DB_SYNC_INTERVAL_SEC` | `0` | Periodic DB→runtime sync interval in seconds. `0` disables background polling; `>=1` enables periodic reconciliation across multiple Coraza nodes. |
-| `WAF_STRICT_OVERRIDE` | `false` | Behavior when a special-rule file fails to load. `true`: fail fast. `false`: warn and continue. |
-| `WAF_API_BASEPATH` | `/mamotama-api` | Base path for admin API routing on Go server. |
-| `WAF_API_KEY_PRIMARY` | `...` | Primary admin API key (`X-API-Key`). |
-| `WAF_API_KEY_SECONDARY` | (empty) | Secondary key for rotation/fallback. Leave empty if unused. |
-| `WAF_API_AUTH_DISABLE` | (empty) | Disable API auth flag. Keep empty (false) in production; use only for test environments. |
-| `WAF_API_CORS_ALLOWED_ORIGINS` | `https://admin.example.com,http://localhost:5173` | Allowed CORS origins (comma-separated). If empty, CORS is disabled (same-origin only). |
-| `WAF_ALLOW_INSECURE_DEFAULTS` | (empty) | Dev-only flag to allow weak API keys or disabled auth. Do not set in production. |
+| `WAF_CONFIG_FILE` | `conf/config.json` | App config JSON path loaded at startup. |
+| `WAF_LISTEN_PORT` | `9090` | Compose port/healthcheck/gotestwaf target helper. Keep aligned with `server.listen_addr` in config JSON. |
 
 ### Admin UI
 
-At startup, if `WAF_API_KEY_PRIMARY` is too short or known-weak, Coraza fails to start in secure mode.
-For local testing only, you can temporarily relax this with `WAF_ALLOW_INSECURE_DEFAULTS=1`.
+At startup, if `admin.api_key_primary` is too short or known-weak, Coraza fails to start in secure mode.
+For local testing only, you can temporarily relax this with `admin.allow_insecure_defaults=true` in `config.json`.
 
 ---
 
@@ -199,7 +175,7 @@ If you are migrating from older env-based proxy config, generate and validate `p
 ./scripts/migrate_proxy_config.sh --check
 ```
 
-By default this reads `.env` and resolves `WAF_PROXY_CONFIG_FILE=conf/proxy.json` to host path `data/conf/proxy.json`.
+By default this reads `.env` and resolves to `data/conf/proxy.json`.
 
 #### Optional: Local MySQL Container (profile: `mysql`)
 
@@ -209,9 +185,9 @@ For future DB-driver validation, you can start a local MySQL container:
 docker compose --profile mysql up -d mysql
 ```
 
-When using MySQL for DB-backed logs/configs, set `WAF_STORAGE_BACKEND=db`, `WAF_DB_DRIVER=mysql`, and `WAF_DB_DSN` (for example `mamotama:mamotama@tcp(mysql:3306)/mamotama?charset=utf8mb4&parseTime=true`).
+When using MySQL for DB-backed logs/configs, set `storage.backend=db`, `storage.db_driver=mysql`, and `storage.db_dsn` in `data/conf/config.json` (for example `mamotama:mamotama@tcp(mysql:3306)/mamotama?charset=utf8mb4&parseTime=true`).
 
-For multi-node operation, set `WAF_DB_SYNC_INTERVAL_SEC` (for example `10`) so each node periodically reconciles runtime files from `config_blobs` and applies reload only when content actually changes.
+For multi-node operation, set `storage.db_sync_interval_sec` (for example `10`) so each node periodically reconciles runtime files from `config_blobs` and applies reload only when content actually changes.
 
 Scale-out note: for multiple Coraza nodes, use a shared MySQL backend (`db + mysql`) as the standard setup. `file` and `db + sqlite` are intended for single-node or local validation use.
 
@@ -319,7 +295,8 @@ You can also run HTTP provider mode with a local stub endpoint:
 What this script does:
 
 - Starts a local temporary provider stub on `127.0.0.1:${MOCK_PROVIDER_PORT:-18091}`
-- Starts/rebuilds `coraza` in `WAF_FP_TUNER_MODE=http`
+- Creates a temporary app config derived from `data/conf/config.json` with `fp_tuner.mode=http` and provider endpoint override
+- Starts/rebuilds `coraza` with `WAF_CONFIG_FILE=<temporary-config>`
 - Sends `propose` / `apply` requests and checks response contract
 - Verifies provider-bound payload is masked before external send
 
@@ -439,7 +416,7 @@ If logs or rules are missing, API returns `500` with `{"error":"..."}`.
 
 ### Bypass File Location
 
-Specify with environment variable `WAF_BYPASS_FILE` (default: `conf/waf.bypass`).
+Specify in `data/conf/config.json` via `paths.bypass_file` (default: `conf/waf.bypass`).
 
 ### File Format
 
@@ -461,13 +438,13 @@ You can directly edit and save `waf.bypass` from dashboard `/bypass`.
 
 ### Country Block Settings
 
-You can edit `WAF_COUNTRY_BLOCK_FILE` (default: `conf/country-block.conf`) from `/country-block`.
+You can edit `paths.country_block_file` (default: `conf/country-block.conf`) from `/country-block`.
 Use one country code per line (`JP`, `US`, `UNKNOWN`).
 Matched countries are blocked with `403` before WAF inspection.
 
 ### Rate Limit Settings
 
-You can edit `WAF_RATE_LIMIT_FILE` (default: `conf/rate-limit.conf`) from `/rate-limit`.
+You can edit `paths.rate_limit_file` (default: `conf/rate-limit.conf`) from `/rate-limit`.
 Configuration format is JSON with `default_policy` and `rules`.
 On exceed, response uses `action.status` (typically `429`) and includes `Retry-After` header.
 
@@ -501,7 +478,7 @@ On exceed, response uses `action.status` (typically `429`) and includes `Retry-A
 
 ### Bot Defense Settings
 
-You can edit `WAF_BOT_DEFENSE_FILE` (default: `conf/bot-defense.conf`) from `/bot-defense`.
+You can edit `paths.bot_defense_file` (default: `conf/bot-defense.conf`) from `/bot-defense`.
 When enabled, suspicious (or all, depending on mode) browser-like GET requests on matched paths receive a challenge response before WAF inspection.
 
 #### JSON Parameter Quick Reference
@@ -520,7 +497,7 @@ When enabled, suspicious (or all, depending on mode) browser-like GET requests o
 
 ### Semantic Security Settings
 
-You can edit `WAF_SEMANTIC_FILE` (default: `conf/semantic.conf`) from `/semantic`.
+You can edit `paths.semantic_file` (default: `conf/semantic.conf`) from `/semantic`.
 This is a heuristic detector (rule-based, non-ML) with staged enforcement: `off | log_only | challenge | block`.
 
 #### JSON Parameter Quick Reference
@@ -537,20 +514,20 @@ This is a heuristic detector (rule-based, non-ML) with staged enforcement: `off 
 
 ### Rule File Editing (multi-file aware)
 
-Dashboard `/rules` edits active base rule set (`WAF_RULES_FILE` and, when CRS enabled, `crs-setup.conf` + enabled `*.conf` under `WAF_CRS_RULES_DIR`).
+Dashboard `/rules` edits active base rule set (`paths.rules_file` and, when CRS enabled, `paths.crs_setup_file` + enabled `*.conf` under `paths.crs_rules_dir`).
 Before save, server-side syntax validation is performed. Successful save hot-reloads base WAF.
 If reload fails, automatic rollback is applied.
 
 ### CRS Rule Set Toggle
 
 Dashboard `/rule-sets` toggles each file under `rules/crs/rules/*.conf`.
-State is persisted to `WAF_CRS_DISABLED_FILE` and WAF is hot-reloaded on save.
+State is persisted to `paths.crs_disabled_file` and WAF is hot-reloaded on save.
 
 ### Priority
 
 - Special-rule entries take precedence (bypass entries on same path are ignored)
 - If rule file does not exist:
-  - `WAF_STRICT_OVERRIDE=true`: fail immediately (`log.Fatalf`)
+  - `admin.strict_override=true`: fail immediately (`log.Fatalf`)
   - `false` or unset: log warning and continue with normal rules
 
 ### Example
@@ -582,7 +559,7 @@ curl -s -H "X-API-Key: <your-api-key>" \
 - `country`: country code filter (`JP`, `US`, `UNKNOWN`). Omit or set `ALL` for all records.
   - Under Cloudflare, `CF-IPCountry` header is used. If unavailable, `UNKNOWN` is used.
 
-Use the API key configured in `.env`.
+Use the API key configured in `data/conf/config.json` (`admin.api_key_primary` / `admin.api_key_secondary`).
 For production, always enforce access controls and authentication.
 
 ## Cache Feature
@@ -655,7 +632,7 @@ GitHub Actions workflow `ci` validates:
 - `docker compose config` sanity check
 - MySQL log-store integration test (`go test ./internal/handler -run TestLogsStatsMySQLStoreAggregatesAndIngestsIncrementally`, with `docker compose --profile mysql up -d mysql`)
 - Proxy admin smoke (`./scripts/ci_proxy_admin_smoke.sh`: embedded UI + `proxy-rules` validate/probe/PUT/rollback + ETag conflict)
-- `./scripts/run_gotestwaf.sh` (`waf-test` matrix, `MIN_BLOCKED_RATIO=70`, `WAF_DB_ENABLED=false/true`)
+- `./scripts/run_gotestwaf.sh` (`waf-test` matrix, `MIN_BLOCKED_RATIO=70`, with both `storage.backend=file` and `storage.backend=db`)
 
 In production workflows, set these as required branch protection checks:
 

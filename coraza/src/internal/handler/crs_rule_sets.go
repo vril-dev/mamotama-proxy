@@ -100,7 +100,7 @@ func GetCRSRuleSets(c *gin.Context) {
 
 func ValidateCRSRuleSets(c *gin.Context) {
 	if !config.CRSEnable {
-		c.JSON(http.StatusConflict, gin.H{"error": "CRS is disabled (WAF_CRS_ENABLE=false)"})
+		c.JSON(http.StatusConflict, gin.H{"error": "CRS is disabled (crs.enable=false)"})
 		return
 	}
 
@@ -120,7 +120,7 @@ func ValidateCRSRuleSets(c *gin.Context) {
 
 func PutCRSRuleSets(c *gin.Context) {
 	if !config.CRSEnable {
-		c.JSON(http.StatusConflict, gin.H{"error": "CRS is disabled (WAF_CRS_ENABLE=false)"})
+		c.JSON(http.StatusConflict, gin.H{"error": "CRS is disabled (crs.enable=false)"})
 		return
 	}
 

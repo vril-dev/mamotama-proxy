@@ -1,11 +1,83 @@
 #!/usr/bin/env bash
 
+proxy_api_read_env_value() {
+  local env_file="$1"
+  local key="$2"
+  if [[ ! -f "${env_file}" ]]; then
+    return 0
+  fi
+
+  awk -F= -v key="${key}" '
+    $0 ~ "^[[:space:]]*" key "=" {
+      val = $0
+      sub("^[[:space:]]*" key "=", "", val)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+      if (val ~ /^".*"$/ || val ~ /^'\''.*'\''$/) {
+        val = substr(val, 2, length(val)-2)
+      }
+      print val
+      exit
+    }
+  ' "${env_file}"
+}
+
+proxy_api_resolve_host_config_path() {
+  local project_dir="$1"
+  local container_path="$2"
+  local normalized
+
+  normalized="${container_path#./}"
+  if [[ "${normalized}" == /* ]]; then
+    printf '%s\n' "${normalized}"
+    return 0
+  fi
+  if [[ "${normalized}" == data/* ]]; then
+    printf '%s/%s\n' "${project_dir}" "${normalized}"
+    return 0
+  fi
+  printf '%s/data/%s\n' "${project_dir}" "${normalized}"
+}
+
 proxy_api_init() {
+  local lib_dir env_config_file env_api_basepath env_ui_basepath env_api_key
+  local cfg_api_basepath cfg_ui_basepath cfg_api_key
+
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  PROXY_PROJECT_DIR="${PROXY_PROJECT_DIR:-$(cd "${lib_dir}/../.." && pwd)}"
+  PROXY_ENV_FILE="${PROXY_ENV_FILE:-${PROXY_PROJECT_DIR}/.env}"
+
   HOST_CORAZA_PORT="${HOST_CORAZA_PORT:-19090}"
   WAF_LISTEN_PORT="${WAF_LISTEN_PORT:-9090}"
-  WAF_API_BASEPATH="${WAF_API_BASEPATH:-/mamotama-api}"
-  WAF_UI_BASEPATH="${WAF_UI_BASEPATH:-/mamotama-ui}"
-  WAF_API_KEY_PRIMARY="${WAF_API_KEY_PRIMARY:-dev-only-change-this-key-please}"
+
+  env_config_file="${WAF_CONFIG_FILE:-}"
+  env_api_basepath="${WAF_API_BASEPATH:-}"
+  env_ui_basepath="${WAF_UI_BASEPATH:-}"
+  env_api_key="${WAF_API_KEY_PRIMARY:-}"
+
+  if [[ -z "${env_config_file}" ]]; then
+    env_config_file="$(proxy_api_read_env_value "${PROXY_ENV_FILE}" "WAF_CONFIG_FILE")"
+  fi
+  WAF_CONFIG_FILE="${env_config_file:-conf/config.json}"
+  PROXY_HOST_CONFIG_FILE="$(proxy_api_resolve_host_config_path "${PROXY_PROJECT_DIR}" "${WAF_CONFIG_FILE}")"
+
+  cfg_api_basepath=""
+  cfg_ui_basepath=""
+  cfg_api_key=""
+  if command -v jq >/dev/null 2>&1 && [[ -f "${PROXY_HOST_CONFIG_FILE}" ]]; then
+    cfg_api_basepath="$(jq -r '.admin.api_base_path // empty' "${PROXY_HOST_CONFIG_FILE}" 2>/dev/null || true)"
+    cfg_ui_basepath="$(jq -r '.admin.ui_base_path // empty' "${PROXY_HOST_CONFIG_FILE}" 2>/dev/null || true)"
+    cfg_api_key="$(jq -r '.admin.api_key_primary // empty' "${PROXY_HOST_CONFIG_FILE}" 2>/dev/null || true)"
+  fi
+
+  WAF_API_BASEPATH="${env_api_basepath:-${cfg_api_basepath:-/mamotama-api}}"
+  WAF_UI_BASEPATH="${env_ui_basepath:-${cfg_ui_basepath:-/mamotama-ui}}"
+  WAF_API_KEY_PRIMARY="${env_api_key:-${cfg_api_key:-dev-only-change-this-key-please}}"
+  if [[ "${WAF_API_BASEPATH}" != /* ]]; then
+    WAF_API_BASEPATH="/${WAF_API_BASEPATH}"
+  fi
+  if [[ "${WAF_UI_BASEPATH}" != /* ]]; then
+    WAF_UI_BASEPATH="/${WAF_UI_BASEPATH}"
+  fi
 
   PROXY_BASE_URL="http://127.0.0.1:${HOST_CORAZA_PORT}"
   PROXY_API_URL="${PROXY_BASE_URL}${WAF_API_BASEPATH}"
