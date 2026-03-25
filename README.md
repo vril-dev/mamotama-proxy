@@ -686,10 +686,3 @@ SQLite operation notes:
 which means *"please protect"* or *"grant protection"*.
 
 The name reflects the project's purpose: protecting web applications and infrastructure.
-
----
-
-## Disclaimer
-
-This project is primarily intended for security learning and validation.
-Before production use, perform sufficient evaluation and tuning for your environment.
