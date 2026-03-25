@@ -92,13 +92,13 @@ jobs:
       matrix:
         include:
           - mode: file
-            waf_storage_backend: "file"
-            waf_db_enabled: "false"
-            waf_listen_port: "9090"
+            storage_backend: "file"
+            db_driver: "sqlite"
+            expect_sqlite_artifact: "false"
           - mode: sqlite
-            waf_storage_backend: "db"
-            waf_db_enabled: "true"
-            waf_listen_port: "10090"
+            storage_backend: "db"
+            db_driver: "sqlite"
+            expect_sqlite_artifact: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -108,12 +108,24 @@ jobs:
       - name: Install CRS
         run: ./scripts/install_crs.sh
 
+      - name: Configure app config for matrix
+        env:
+          STORAGE_BACKEND: ${{ matrix.storage_backend }}
+          DB_DRIVER: ${{ matrix.db_driver }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp)"
+          jq --arg backend "${STORAGE_BACKEND}" --arg driver "${DB_DRIVER}" '
+            .server.listen_addr = ":9090" |
+            .storage.backend = $backend |
+            .storage.db_driver = $driver |
+            .storage.db_retention_days = 30
+          ' data/conf/config.json > "${tmp}"
+          mv "${tmp}" data/conf/config.json
+
       - name: Coraza smoke check
         env:
-          WAF_STORAGE_BACKEND: ${{ matrix.waf_storage_backend }}
-          WAF_DB_ENABLED: ${{ matrix.waf_db_enabled }}
-          WAF_LISTEN_PORT: ${{ matrix.waf_listen_port }}
-          WAF_DB_RETENTION_DAYS: "30"
+          WAF_LISTEN_PORT: "9090"
           WAF_API_KEY_PRIMARY: "dev-only-change-this-key-please"
         run: |
           set -euo pipefail
@@ -156,14 +168,11 @@ jobs:
         env:
           GOTESTWAF_AUTO_DOWN: "1"
           MIN_BLOCKED_RATIO: "70"
-          WAF_STORAGE_BACKEND: ${{ matrix.waf_storage_backend }}
-          WAF_DB_ENABLED: ${{ matrix.waf_db_enabled }}
-          WAF_LISTEN_PORT: ${{ matrix.waf_listen_port }}
-          WAF_DB_RETENTION_DAYS: "30"
+          WAF_LISTEN_PORT: "9090"
         run: ./scripts/run_gotestwaf.sh
 
       - name: Validate SQLite DB artifact
-        if: matrix.waf_db_enabled == 'true'
+        if: matrix.expect_sqlite_artifact == 'true'
         run: |
           if [[ ! -s data/logs/coraza/mamotama.db ]]; then
             echo "expected sqlite db file was not generated" >&2
