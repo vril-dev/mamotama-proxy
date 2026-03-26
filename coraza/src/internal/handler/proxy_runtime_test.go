@@ -40,6 +40,9 @@ func TestValidateProxyRulesRaw(t *testing.T) {
 	if cfg.UpstreamURL != "http://127.0.0.1:8080" {
 		t.Fatalf("unexpected upstream: %s", cfg.UpstreamURL)
 	}
+	if cfg.ErrorHTMLFile != "" || cfg.ErrorRedirectURL != "" {
+		t.Fatalf("unexpected default proxy error config: %#v", cfg)
+	}
 
 	bad := strings.Replace(good, "http://127.0.0.1:8080", "ftp://127.0.0.1:8080", 1)
 	if _, err := ValidateProxyRulesRaw(bad); err == nil {
@@ -54,6 +57,32 @@ func TestValidateProxyRulesRaw(t *testing.T) {
 	tlsBad := strings.Replace(good, `"tls_client_cert": ""`, `"tls_client_cert": "/tmp/cert.pem"`, 1)
 	if _, err := ValidateProxyRulesRaw(tlsBad); err == nil {
 		t.Fatal("expected mTLS pair validation error")
+	}
+
+	badRedirect := strings.Replace(good, `"health_check_timeout_sec": 2`, `"health_check_timeout_sec": 2, "error_redirect_url": "maintenance"`, 1)
+	if _, err := ValidateProxyRulesRaw(badRedirect); err == nil {
+		t.Fatal("expected error_redirect_url validation error")
+	}
+}
+
+func TestValidateProxyRulesRawRejectsMissingErrorHTMLFile(t *testing.T) {
+	raw := `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "error_html_file": "/does/not/exist.html"
+}`
+	if _, err := ValidateProxyRulesRaw(raw); err == nil {
+		t.Fatal("expected missing error_html_file validation error")
+	}
+}
+
+func TestValidateProxyRulesRawRejectsErrorHTMLAndRedirectTogether(t *testing.T) {
+	raw := `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "error_html_file": "/tmp/maintenance.html",
+  "error_redirect_url": "/maintenance"
+}`
+	if _, err := ValidateProxyRulesRaw(raw); err == nil {
+		t.Fatal("expected mutually exclusive proxy error config validation error")
 	}
 }
 

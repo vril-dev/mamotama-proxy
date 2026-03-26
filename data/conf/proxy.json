@@ -17,5 +17,7 @@
   "flush_interval_ms": 25,
   "health_check_path": "/bench",
   "health_check_interval_sec": 15,
-  "health_check_timeout_sec": 2
+  "health_check_timeout_sec": 2,
+  "error_html_file": "",
+  "error_redirect_url": ""
 }
