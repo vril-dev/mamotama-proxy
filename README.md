@@ -83,6 +83,44 @@ Container startup uses only:
 At startup, if `admin.api_key_primary` is too short or known-weak, Coraza fails to start in secure mode.
 For local testing only, you can temporarily relax this with `admin.allow_insecure_defaults=true` in `config.json`.
 
+## Host Network Hardening (L3/L4 Basics)
+
+mamotama focuses on application-layer (L7) protection.
+Large volumetric L3/L4 attacks that saturate links cannot be mitigated by mamotama alone.
+For internet-exposed deployments, combine it with upstream protections such as ISP, CDN, load balancer, or scrubbing services.
+
+The following Linux kernel settings are a host-side hardening baseline for improving resilience against SYN floods and spoofed source traffic.
+They are not a substitute for upstream DDoS mitigation.
+
+`/etc/sysctl.d/99-mamotama-network-hardening.conf`
+
+```conf
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_max_syn_backlog = 4096
+net.core.somaxconn = 4096
+
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+
+# Assumes symmetric routing. Consider 2 for asymmetric routing, multi-NIC, or tunnel setups.
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+```
+
+Apply:
+
+```bash
+sudo sysctl --system
+```
+
+Notes:
+
+- `rp_filter=1` can break traffic in asymmetric routing environments
+- `tcp_syncookies` is a fallback for SYN flood handling and does not prevent bandwidth exhaustion
+- firewall / nftables / iptables rate limits should be tuned to real traffic, not copied blindly
+
 ---
 
 ## Admin Dashboard

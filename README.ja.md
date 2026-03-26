@@ -84,6 +84,44 @@ Coraza + CRS WAFプロジェクト
 起動時に `admin.api_key_primary` が短すぎる/既知の弱い値の場合、Corazaプロセスは安全側で起動失敗します。  
 ローカル検証だけ一時的に緩和したい場合は `admin.allow_insecure_defaults=true` を利用してください。
 
+## Host Network Hardening（L3/L4 対策の基礎）
+
+mamotama はアプリケーション層（L7）の保護に特化しています。  
+回線帯域を埋めるような大規模な L3/L4 volumetric 攻撃は、mamotama 単体では防げません。  
+インターネット公開環境では、ISP / CDN / Load Balancer / scrubbing service などの upstream 側対策を併用してください。
+
+以下の Linux カーネル設定は、SYN flood や spoofed source への耐性を高めるためのホスト側 hardening 例です。  
+upstream 側の DDoS 対策の代替ではありません。
+
+`/etc/sysctl.d/99-mamotama-network-hardening.conf`
+
+```conf
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_max_syn_backlog = 4096
+net.core.somaxconn = 4096
+
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+
+# 対称ルーティング前提。非対称ルーティングや複数 NIC / トンネル環境では 2 を検討
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+```
+
+適用:
+
+```bash
+sudo sysctl --system
+```
+
+注意:
+
+- `rp_filter=1` は非対称ルーティング環境では通信断の原因になります
+- `tcp_syncookies` は SYN flood 時の fallback であり、帯域枯渇そのものは防げません
+- firewall / nftables / iptables の rate limit は実トラフィックに合わせて個別設計してください
+
 ---
 
 ## 管理ダッシュボード
