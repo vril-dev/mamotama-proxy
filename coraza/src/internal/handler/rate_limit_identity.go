@@ -19,6 +19,8 @@ const (
 	defaultAdaptiveScoreThreshold     = 6
 	defaultAdaptiveLimitFactorPercent = 50
 	defaultAdaptiveBurstFactorPercent = 50
+	maxRateLimitJWTTokenBytes         = 4096
+	maxRateLimitJWTPayloadChars       = 3072
 )
 
 var (
@@ -133,12 +135,15 @@ func extractRateLimitJWTSub(r *http.Request, headerNames, cookieNames []string) 
 }
 
 func parseJWTSubject(token string) string {
+	if len(token) == 0 || len(token) > maxRateLimitJWTTokenBytes {
+		return ""
+	}
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
 		return ""
 	}
 	payload := parts[1]
-	if payload == "" {
+	if payload == "" || len(payload) > maxRateLimitJWTPayloadChars {
 		return ""
 	}
 	data, err := base64.RawURLEncoding.DecodeString(payload)
