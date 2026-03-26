@@ -70,8 +70,47 @@ type fpTunerEventInput struct {
 }
 
 type fpTunerProposeBody struct {
-	Event      *fpTunerEventInput `json:"event,omitempty"`
-	TargetPath string             `json:"target_path,omitempty"`
+	Event      *fpTunerEventInput  `json:"event,omitempty"`
+	Events     []fpTunerEventInput `json:"events,omitempty"`
+	TargetPath string              `json:"target_path,omitempty"`
+}
+
+type fpTunerApproval struct {
+	Required bool   `json:"required"`
+	Token    string `json:"token,omitempty"`
+}
+
+type fpTunerProposeResult struct {
+	Input    fpTunerEventInput `json:"input"`
+	Proposal fpTunerProposal   `json:"proposal"`
+	Approval fpTunerApproval   `json:"approval"`
+}
+
+type fpTunerProposeError struct {
+	Status  int
+	Message string
+	Details string
+	Err     error
+}
+
+func (e *fpTunerProposeError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	if e.Details != "" {
+		return e.Details
+	}
+	return e.Message
+}
+
+func (e *fpTunerProposeError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
 }
 
 type fpTunerProposal struct {
@@ -109,7 +148,7 @@ func ProposeFPTuning(c *gin.Context) {
 		return
 	}
 
-	event, source, err := resolveFPTunerEventInput(in.Event)
+	events, source, err := resolveFPTunerEventInputs(in)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"ok": false, "error": err.Error()})
 		return
@@ -121,68 +160,46 @@ func ProposeFPTuning(c *gin.Context) {
 		return
 	}
 
-	providerReq := fpTunerProviderRequest{
-		Version:    "v1",
-		Model:      strings.TrimSpace(config.FPTunerModel),
-		Input:      maskFPTunerProviderInput(event),
-		TargetPath: targetPath,
-		Constraints: []string{
-			"Only return one scoped exclusion rule",
-			"Rule must be SecRule REQUEST_URI with ctl:ruleRemoveTargetById",
-			"No global disable operations",
-		},
-	}
-
-	proposal, mode, err := requestFPTunerProposal(providerReq)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"ok": false, "error": err.Error()})
-		return
-	}
-	proposal = fillFPTunerProposalDefaults(proposal, event, targetPath)
-
-	if err := validateFPTunerRuleLine(proposal.RuleLine); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"ok":      false,
-			"error":   "provider returned unsafe proposal",
-			"details": err.Error(),
-		})
-		return
-	}
-
-	approvalRequired := config.FPTunerRequireApproval
-	approvalToken := ""
-	if approvalRequired {
-		issued, issueErr := issueFPTunerApprovalToken(proposal)
-		if issueErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"ok":    false,
-				"error": fmt.Sprintf("failed to issue approval token: %v", issueErr),
-			})
+	results := make([]fpTunerProposeResult, 0, len(events))
+	mode := ""
+	for _, event := range events {
+		result, proposalMode, proposalErr := buildFPTunerProposeResult(event, targetPath)
+		if proposalErr != nil {
+			writeFPTunerProposeError(c, proposalErr)
 			return
 		}
-		approvalToken = issued
+		if mode == "" {
+			mode = proposalMode
+		}
+		results = append(results, result)
 	}
 
 	appendFPTunerAudit(c, "fp_tuner_propose", map[string]any{
 		"mode":              mode,
 		"source":            source,
-		"proposal_id":       proposal.ID,
-		"proposal_hash":     proposalHash(proposal),
-		"approval_required": approvalRequired,
-		"target_path":       proposal.TargetPath,
+		"count":             len(results),
+		"approval_required": config.FPTunerRequireApproval,
+		"target_path":       targetPath,
 	})
-
+	if len(results) == 1 {
+		c.JSON(http.StatusOK, gin.H{
+			"ok":               true,
+			"contract_version": "fp_tuner.v1",
+			"mode":             mode,
+			"source":           source,
+			"approval":         results[0].Approval,
+			"input":            results[0].Input,
+			"proposal":         results[0].Proposal,
+		})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"ok":               true,
-		"contract_version": "fp_tuner.v1",
+		"contract_version": "fp_tuner.v2",
 		"mode":             mode,
 		"source":           source,
-		"approval": gin.H{
-			"required": approvalRequired,
-			"token":    approvalToken,
-		},
-		"input":    event,
-		"proposal": proposal,
+		"count":            len(results),
+		"proposals":        results,
 	})
 }
 
@@ -345,6 +362,90 @@ func resolveFPTunerEventInput(in *fpTunerEventInput) (fpTunerEventInput, string,
 	}
 
 	return normalizeFPTunerEventInput(event), source, nil
+}
+
+func resolveFPTunerEventInputs(in fpTunerProposeBody) ([]fpTunerEventInput, string, error) {
+	if in.Event != nil && len(in.Events) > 0 {
+		return nil, "", fmt.Errorf("event and events cannot be used together")
+	}
+	if len(in.Events) > 0 {
+		out := make([]fpTunerEventInput, 0, len(in.Events))
+		for i, raw := range in.Events {
+			norm := normalizeFPTunerEventInput(raw)
+			if norm.Path == "" {
+				return nil, "", fmt.Errorf("events[%d].path is required", i)
+			}
+			out = append(out, norm)
+		}
+		return out, "request_batch", nil
+	}
+	event, source, err := resolveFPTunerEventInput(in.Event)
+	if err != nil {
+		return nil, "", err
+	}
+	return []fpTunerEventInput{event}, source, nil
+}
+
+func writeFPTunerProposeError(c *gin.Context, err error) {
+	var proposeErr *fpTunerProposeError
+	if errors.As(err, &proposeErr) {
+		body := gin.H{"ok": false, "error": proposeErr.Message}
+		if proposeErr.Details != "" {
+			body["details"] = proposeErr.Details
+		}
+		c.JSON(proposeErr.Status, body)
+		return
+	}
+	c.JSON(http.StatusBadGateway, gin.H{"ok": false, "error": err.Error()})
+}
+
+func buildFPTunerProposeResult(event fpTunerEventInput, targetPath string) (fpTunerProposeResult, string, error) {
+	providerReq := fpTunerProviderRequest{
+		Version:    "v1",
+		Model:      strings.TrimSpace(config.FPTunerModel),
+		Input:      maskFPTunerProviderInput(event),
+		TargetPath: targetPath,
+		Constraints: []string{
+			"Only return one scoped exclusion rule",
+			"Rule must be SecRule REQUEST_URI with ctl:ruleRemoveTargetById",
+			"No global disable operations",
+		},
+	}
+	proposal, mode, err := requestFPTunerProposal(providerReq)
+	if err != nil {
+		return fpTunerProposeResult{}, "", &fpTunerProposeError{
+			Status:  http.StatusBadGateway,
+			Message: err.Error(),
+			Err:     err,
+		}
+	}
+	proposal = fillFPTunerProposalDefaults(proposal, event, targetPath)
+	if err := validateFPTunerRuleLine(proposal.RuleLine); err != nil {
+		return fpTunerProposeResult{}, "", &fpTunerProposeError{
+			Status:  http.StatusUnprocessableEntity,
+			Message: "provider returned unsafe proposal",
+			Details: err.Error(),
+			Err:     err,
+		}
+	}
+	result := fpTunerProposeResult{
+		Input:    event,
+		Proposal: proposal,
+		Approval: fpTunerApproval{Required: config.FPTunerRequireApproval},
+	}
+	if config.FPTunerRequireApproval {
+		token, err := issueFPTunerApprovalToken(proposal)
+		if err != nil {
+			return fpTunerProposeResult{}, "", &fpTunerProposeError{
+				Status:  http.StatusInternalServerError,
+				Message: "failed to issue approval token",
+				Details: err.Error(),
+				Err:     err,
+			}
+		}
+		result.Approval.Token = token
+	}
+	return result, mode, nil
 }
 
 func latestWAFBlockEvent() (fpTunerEventInput, error) {

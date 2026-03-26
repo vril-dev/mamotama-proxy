@@ -221,7 +221,7 @@ func ProxyHandler(c *gin.Context) {
 		}
 	}
 
-	rateDecision := EvaluateRateLimit(c.Request.Method, c.Request.URL.Path, clientIP, country, time.Now().UTC())
+	rateDecision := EvaluateRateLimit(c.Request, clientIP, country, semanticEval.Score, time.Now().UTC())
 	if !rateDecision.Allowed {
 		evt := map[string]any{
 			"ts":          time.Now().UTC().Format(time.RFC3339Nano),
@@ -235,8 +235,12 @@ func ProxyHandler(c *gin.Context) {
 			"status":      rateDecision.Status,
 			"policy_id":   rateDecision.PolicyID,
 			"limit":       rateDecision.Limit,
+			"base_limit":  rateDecision.BaseLimit,
 			"window_sec":  rateDecision.WindowSeconds,
 			"rl_key_hash": rateDecision.Key,
+			"key_by":      rateDecision.KeyBy,
+			"adaptive":    rateDecision.Adaptive,
+			"risk_score":  rateDecision.RiskScore,
 		}
 		emitJSONLog(evt)
 		_ = appendEventToFile(evt)

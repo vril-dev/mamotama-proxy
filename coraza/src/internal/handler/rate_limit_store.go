@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -47,6 +49,7 @@ type rateLimitConfig struct {
 	AllowlistCountries []string        `json:"allowlist_countries,omitempty"`
 	DefaultPolicy      rateLimitPolicy `json:"default_policy"`
 	Rules              []rateLimitRule `json:"rules,omitempty"`
+	rateLimitIdentityConfig
 }
 
 type compiledRateLimitRule struct {
@@ -78,7 +81,18 @@ type rateLimitDecision struct {
 	PolicyID          string
 	Key               string
 	Limit             int
+	BaseLimit         int
 	WindowSeconds     int
+	KeyBy             string
+	Adaptive          bool
+	RiskScore         int
+}
+
+type rateLimitStats struct {
+	Requests          uint64 `json:"requests"`
+	Allowed           uint64 `json:"allowed"`
+	Blocked           uint64 `json:"blocked"`
+	AdaptiveDecisions uint64 `json:"adaptive_decisions"`
 }
 
 var (
@@ -89,6 +103,11 @@ var (
 	rateCounterMu    sync.Mutex
 	rateCounters     = map[string]rateCounter{}
 	rateCounterSweep int
+
+	rateLimitRequestsTotal atomic.Uint64
+	rateLimitAllowedTotal  atomic.Uint64
+	rateLimitBlockedTotal  atomic.Uint64
+	rateLimitAdaptiveTotal atomic.Uint64
 )
 
 func InitRateLimit(path string) error {
@@ -154,34 +173,61 @@ func ValidateRateLimitRaw(raw string) (*runtimeRateLimitConfig, error) {
 	return buildRateLimitRuntimeFromRaw([]byte(raw))
 }
 
-func EvaluateRateLimit(method, path, clientIP, country string, now time.Time) rateLimitDecision {
+func GetRateLimitStats() rateLimitStats {
+	return rateLimitStats{
+		Requests:          rateLimitRequestsTotal.Load(),
+		Allowed:           rateLimitAllowedTotal.Load(),
+		Blocked:           rateLimitBlockedTotal.Load(),
+		AdaptiveDecisions: rateLimitAdaptiveTotal.Load(),
+	}
+}
+
+func EvaluateRateLimit(r *http.Request, clientIP, country string, riskScore int, now time.Time) rateLimitDecision {
 	rt := currentRateLimitRuntime()
 	if rt == nil || !rt.Raw.Enabled {
 		return rateLimitDecision{Allowed: true}
 	}
+	rateLimitRequestsTotal.Add(1)
 
 	ip := normalizeClientIP(clientIP)
 	cc := normalizeCountryCode(country)
 	if isAllowlistedIP(rt, ip) || isAllowlistedCountry(rt, cc) {
+		rateLimitAllowedTotal.Add(1)
 		return rateLimitDecision{Allowed: true}
 	}
 
+	method, path := http.MethodGet, ""
+	if r != nil {
+		method = r.Method
+		if r.URL != nil {
+			path = r.URL.Path
+		}
+	}
 	policy, policyID := pickRateLimitPolicy(rt, method, path)
 	if !policy.Enabled {
+		rateLimitAllowedTotal.Add(1)
 		return rateLimitDecision{Allowed: true}
 	}
 
-	key := buildRateLimitKey(policy.KeyBy, ip, cc)
+	identity := extractRateLimitIdentity(r, rt.Raw.rateLimitIdentityConfig)
+	effectivePolicy, adaptive := applyAdaptiveRateLimit(rt.Raw.rateLimitIdentityConfig, policy, riskScore)
+	if adaptive {
+		rateLimitAdaptiveTotal.Add(1)
+	}
+	key := buildRateLimitKey(effectivePolicy.KeyBy, ip, cc, identity)
 	if key == "" {
+		rateLimitAllowedTotal.Add(1)
 		return rateLimitDecision{Allowed: true}
 	}
 
-	maxHits := policy.Limit + policy.Burst
-	if maxHits <= 0 || policy.WindowSeconds <= 0 {
+	baseHits := policy.Limit + policy.Burst
+	maxHits := effectivePolicy.Limit + effectivePolicy.Burst
+	if maxHits <= 0 || effectivePolicy.WindowSeconds <= 0 {
+		rateLimitAllowedTotal.Add(1)
 		return rateLimitDecision{Allowed: true}
 	}
 
-	windowID := now.Unix() / int64(policy.WindowSeconds)
+	windowID := now.Unix() / int64(effectivePolicy.WindowSeconds)
 	counterKey := policyID + "|" + key
 
 	rateCounterMu.Lock()
@@ -210,19 +256,21 @@ func EvaluateRateLimit(method, path, clientIP, country string, now time.Time) ra
 	rateCounterMu.Unlock()
 
 	if allowed {
+		rateLimitAllowedTotal.Add(1)
 		return rateLimitDecision{Allowed: true}
 	}
+	rateLimitBlockedTotal.Add(1)
 
-	retryAfter := policy.Action.RetryAfterSeconds
+	retryAfter := effectivePolicy.Action.RetryAfterSeconds
 	if retryAfter <= 0 {
-		nextWindowUnix := (windowID + 1) * int64(policy.WindowSeconds)
+		nextWindowUnix := (windowID + 1) * int64(effectivePolicy.WindowSeconds)
 		retryAfter = int(nextWindowUnix - now.Unix())
 		if retryAfter < 1 {
 			retryAfter = 1
 		}
 	}
 
-	status := policy.Action.Status
+	status := effectivePolicy.Action.Status
 	if status == 0 {
 		status = 429
 	}
@@ -232,9 +280,13 @@ func EvaluateRateLimit(method, path, clientIP, country string, now time.Time) ra
 		Status:            status,
 		RetryAfterSeconds: retryAfter,
 		PolicyID:          policyID,
-		Key:               key,
+		Key:               hashRateLimitKey(key),
 		Limit:             maxHits,
-		WindowSeconds:     policy.WindowSeconds,
+		BaseLimit:         baseHits,
+		WindowSeconds:     effectivePolicy.WindowSeconds,
+		KeyBy:             effectivePolicy.KeyBy,
+		Adaptive:          adaptive,
+		RiskScore:         riskScore,
 	}
 }
 
@@ -283,20 +335,6 @@ func matchesMethod(methods map[string]struct{}, method string) bool {
 	return ok
 }
 
-func buildRateLimitKey(kind, ip, country string) string {
-	switch kind {
-	case rateLimitKeyByCountry:
-		return country
-	case rateLimitKeyByIPCountry:
-		if ip == "" {
-			return country
-		}
-		return ip + "|" + country
-	default:
-		return ip
-	}
-}
-
 func isAllowlistedCountry(rt *runtimeRateLimitConfig, country string) bool {
 	_, ok := rt.AllowCountries[country]
 	return ok
@@ -334,6 +372,7 @@ func buildRateLimitRuntimeFromRaw(raw []byte) (*runtimeRateLimitConfig, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, err
 	}
+	normalizeRateLimitIdentityConfig(&cfg.rateLimitIdentityConfig)
 
 	if cfg.DefaultPolicy == (rateLimitPolicy{}) {
 		cfg.DefaultPolicy = rateLimitPolicy{
@@ -431,6 +470,18 @@ func buildRateLimitRuntimeFromRaw(raw []byte) (*runtimeRateLimitConfig, error) {
 	}
 
 	sort.Slice(compiledRules, func(i, j int) bool { return i < j })
+	cfg.DefaultPolicy = defaultPolicy
+	cfg.AllowlistCountries = sortedKeys(allowCountries)
+	cfg.AllowlistIPs = make([]string, 0, len(allowPrefixes))
+	for _, pfx := range allowPrefixes {
+		cfg.AllowlistIPs = append(cfg.AllowlistIPs, pfx.String())
+	}
+	for i, rule := range cfg.Rules {
+		cfg.Rules[i].MatchType = strings.ToLower(strings.TrimSpace(rule.MatchType))
+		cfg.Rules[i].MatchValue = strings.TrimSpace(rule.MatchValue)
+		cfg.Rules[i].Policy = compiledRules[i].Policy
+		cfg.Rules[i].Methods = sortedMethodList(compiledRules[i].Methods)
+	}
 
 	return &runtimeRateLimitConfig{
 		Raw:               cfg,
@@ -460,9 +511,9 @@ func normalizeRateLimitPolicy(p rateLimitPolicy, field string) (rateLimitPolicy,
 		p.KeyBy = rateLimitKeyByIP
 	}
 	switch p.KeyBy {
-	case rateLimitKeyByIP, rateLimitKeyByCountry, rateLimitKeyByIPCountry:
+	case rateLimitKeyByIP, rateLimitKeyByCountry, rateLimitKeyByIPCountry, rateLimitKeyBySession, rateLimitKeyByIPSession, rateLimitKeyByJWTSub, rateLimitKeyByIPJWTSub:
 	default:
-		return p, fmt.Errorf("%s.key_by must be ip|country|ip_country", field)
+		return p, fmt.Errorf("%s.key_by must be ip|country|ip_country|session|ip_session|jwt_sub|ip_jwt_sub", field)
 	}
 
 	if p.Enabled {
@@ -492,6 +543,13 @@ func ensureRateLimitFile(path string) error {
   "enabled": true,
   "allowlist_ips": [],
   "allowlist_countries": [],
+  "session_cookie_names": ["session", "sid"],
+  "jwt_header_names": ["Authorization"],
+  "jwt_cookie_names": ["token", "access_token"],
+  "adaptive_enabled": false,
+  "adaptive_score_threshold": 6,
+  "adaptive_limit_factor_percent": 50,
+  "adaptive_burst_factor_percent": 50,
   "default_policy": {
     "enabled": true,
     "limit": 120,

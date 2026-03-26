@@ -151,11 +151,13 @@ func main() {
 					config.APIBasePath + "/logs/read",
 					config.APIBasePath + "/logs/stats",
 					config.APIBasePath + "/logs/download",
+					config.APIBasePath + "/metrics",
 				},
 			})
 		})
 
 		api.GET("/status", handler.StatusHandler)
+		api.GET("/metrics", handler.MetricsHandler)
 		api.GET("/logs/read", handler.LogsRead)
 		api.GET("/logs/stats", handler.LogsStats)
 		api.GET("/logs/download", handler.LogsDownload)
