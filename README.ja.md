@@ -548,6 +548,21 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 - 同一IP内で国別に分けたい: `key_by="ip_country"`
 - 特定拠点を除外したい: `allowlist_ips` または `allowlist_countries` に追加
 
+#### 推奨設定
+
+- 一般公開トラフィック: `default_policy.key_by="ip"` を基本にする
+- 安定した session cookie があるブラウザのログイン/フォーム: `key_by="session"` を使う
+- 安定して信頼できる JWT `sub` を持つ認証 API: `key_by="jwt_sub"` を使う
+- adaptive 制御はまずログインや更新系パスから有効化する: `adaptive_enabled=true`, `adaptive_score_threshold=6`, `adaptive_limit_factor_percent=50`, `adaptive_burst_factor_percent=50`
+
+巨大な JWT header/cookie 値は `jwt_sub` 抽出対象から除外され、base64 decode や JSON parse は行いません。
+
+#### 監視ポイント
+
+- `/mamotama-api/metrics` で rate-limit の blocked / adaptive カウンタ増加を確認する
+- `/mamotama-api/metrics` で login / write 系パス周辺の semantic action カウンタを確認する
+- 調整時はログの `rl_key_hash`, `adaptive`, `risk_score`, `reason_list`, `score_breakdown` を見る
+
 ### Bot Defense 設定
 
 管理ダッシュボード `/bot-defense` から、`paths.bot_defense_file`（既定: `conf/bot-defense.conf`）を編集できます。  

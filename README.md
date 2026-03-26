@@ -545,6 +545,21 @@ On exceed, response uses `action.status` (typically `429`) and includes `Retry-A
 - Separate by IP + country: set `key_by="ip_country"`
 - Exempt trusted locations: add to `allowlist_ips` or `allowlist_countries`
 
+#### Recommended Settings
+
+- General public traffic: keep `default_policy.key_by="ip"`
+- Browser login/forms with stable session cookies: use `key_by="session"`
+- Authenticated APIs with stable trusted JWT `sub`: use `key_by="jwt_sub"`
+- Start adaptive throttling on higher-risk login or write paths first: `adaptive_enabled=true`, `adaptive_score_threshold=6`, `adaptive_limit_factor_percent=50`, `adaptive_burst_factor_percent=50`
+
+Oversized JWT header/cookie values are ignored for `jwt_sub` extraction and are not base64-decoded or JSON-parsed.
+
+#### Monitoring Points
+
+- Watch `/mamotama-api/metrics` for sustained increases in rate-limit blocked and adaptive counters
+- Watch `/mamotama-api/metrics` for semantic action counters around login and write endpoints
+- Inspect logs for `rl_key_hash`, `adaptive`, `risk_score`, `reason_list`, and `score_breakdown` when tuning false positives or throttling
+
 ### Bot Defense Settings
 
 You can edit `paths.bot_defense_file` (default: `conf/bot-defense.conf`) from `/bot-defense`.
