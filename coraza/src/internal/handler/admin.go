@@ -107,6 +107,8 @@ func StatusHandler(c *gin.Context) {
 		"proxy_health_check_path":              proxyCfg.HealthCheckPath,
 		"proxy_health_check_interval_sec":      proxyCfg.HealthCheckInterval,
 		"proxy_health_check_timeout_sec":       proxyCfg.HealthCheckTimeout,
+		"proxy_error_html_file":                proxyCfg.ErrorHTMLFile,
+		"proxy_error_redirect_url":             proxyCfg.ErrorRedirectURL,
 		"proxy_rollback_depth":                 proxyRollbackDepth,
 		"upstream_health_enabled":              proxyHealth.Enabled,
 		"upstream_health_status":               proxyHealth.Status,
