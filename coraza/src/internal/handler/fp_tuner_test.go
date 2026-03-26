@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,48 @@ func TestMaskSensitiveText(t *testing.T) {
 	}
 	if strings.Contains(out, "10.1.2.3") {
 		t.Fatalf("ip should be masked: %s", out)
+	}
+}
+
+func TestLatestSecurityEventFallsBackToSemanticAnomaly(t *testing.T) {
+	now := time.Now().UTC()
+	entries := []map[string]any{
+		{
+			"ts":      now.Format(time.RFC3339Nano),
+			"event":   "semantic_anomaly",
+			"req_id":  "req-sem-1",
+			"method":  "POST",
+			"path":    "/login",
+			"action":  "block",
+			"score":   5,
+			"status":  403,
+			"reason":  "temporal:ip_burst",
+			"reasons": "temporal:ip_burst",
+		},
+	}
+
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "waf-events.ndjson")
+	writeNDJSONFile(t, logPath, entries)
+
+	restoreLogPath := setWAFLogPathForTest(t, logPath)
+	defer restoreLogPath()
+
+	event, source, err := latestSecurityEvent()
+	if err != nil {
+		t.Fatalf("latestSecurityEvent error: %v", err)
+	}
+	if source != "security_log" {
+		t.Fatalf("source=%q want=security_log", source)
+	}
+	if event.EventType != "semantic_anomaly" {
+		t.Fatalf("event_type=%q want=semantic_anomaly", event.EventType)
+	}
+	if event.Path != "/login" {
+		t.Fatalf("path=%q want=/login", event.Path)
+	}
+	if event.Score != 5 {
+		t.Fatalf("score=%d want=5", event.Score)
 	}
 }
 

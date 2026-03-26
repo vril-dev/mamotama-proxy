@@ -46,13 +46,21 @@ var (
 )
 
 type semanticConfig struct {
-	Enabled            bool     `json:"enabled"`
-	Mode               string   `json:"mode"`
-	ExemptPathPrefixes []string `json:"exempt_path_prefixes,omitempty"`
-	LogThreshold       int      `json:"log_threshold"`
-	ChallengeThreshold int      `json:"challenge_threshold"`
-	BlockThreshold     int      `json:"block_threshold"`
-	MaxInspectBody     int64    `json:"max_inspect_body"`
+	Enabled                     bool     `json:"enabled"`
+	Mode                        string   `json:"mode"`
+	ExemptPathPrefixes          []string `json:"exempt_path_prefixes,omitempty"`
+	LogThreshold                int      `json:"log_threshold"`
+	ChallengeThreshold          int      `json:"challenge_threshold"`
+	BlockThreshold              int      `json:"block_threshold"`
+	MaxInspectBody              int64    `json:"max_inspect_body"`
+	TemporalWindowSeconds       int      `json:"temporal_window_seconds,omitempty"`
+	TemporalMaxEntriesPerIP     int      `json:"temporal_max_entries_per_ip,omitempty"`
+	TemporalBurstThreshold      int      `json:"temporal_burst_threshold,omitempty"`
+	TemporalBurstScore          int      `json:"temporal_burst_score,omitempty"`
+	TemporalPathFanoutThreshold int      `json:"temporal_path_fanout_threshold,omitempty"`
+	TemporalPathFanoutScore     int      `json:"temporal_path_fanout_score,omitempty"`
+	TemporalUAChurnThreshold    int      `json:"temporal_ua_churn_threshold,omitempty"`
+	TemporalUAChurnScore        int      `json:"temporal_ua_churn_score,omitempty"`
 }
 
 type semanticStats struct {
@@ -66,11 +74,14 @@ type semanticStats struct {
 type semanticEvaluation struct {
 	Score   int
 	Reasons []string
+	Signals []semanticSignal
 	Action  string
 }
 
 type runtimeSemanticConfig struct {
 	Raw semanticConfig
+
+	temporal *temporalRiskStore
 
 	challengeCookieName string
 	challengeSecret     []byte
@@ -162,6 +173,10 @@ func ValidateSemanticRaw(raw string) (*runtimeSemanticConfig, error) {
 }
 
 func EvaluateSemantic(r *http.Request) semanticEvaluation {
+	return EvaluateSemanticWithContext(r, "", time.Now().UTC())
+}
+
+func EvaluateSemanticWithContext(r *http.Request, clientIP string, now time.Time) semanticEvaluation {
 	rt := currentSemanticRuntime()
 	if rt == nil || r == nil || r.URL == nil {
 		return semanticEvaluation{Action: semanticActionNone}
@@ -182,11 +197,11 @@ func EvaluateSemantic(r *http.Request) semanticEvaluation {
 	}
 
 	score := 0
-	reasons := make([]string, 0, 8)
-	inspectSemanticText("path", r.URL.Path, &score, &reasons)
-	inspectSemanticText("query", r.URL.RawQuery, &score, &reasons)
-	inspectSemanticText("user_agent", r.UserAgent(), &score, &reasons)
-	inspectSemanticText("referer", r.Referer(), &score, &reasons)
+	signals := make([]semanticSignal, 0, 12)
+	inspectSemanticText("path", r.URL.Path, &score, &signals)
+	inspectSemanticText("query", r.URL.RawQuery, &score, &signals)
+	inspectSemanticText("user_agent", r.UserAgent(), &score, &signals)
+	inspectSemanticText("referer", r.Referer(), &score, &signals)
 
 	if cfg.MaxInspectBody > 0 && r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
 		n := cfg.MaxInspectBody + 1
@@ -196,9 +211,10 @@ func EvaluateSemantic(r *http.Request) semanticEvaluation {
 			chunk = chunk[:cfg.MaxInspectBody]
 		}
 		if len(chunk) > 0 {
-			inspectSemanticText("body", string(chunk), &score, &reasons)
+			inspectSemanticText("body", string(chunk), &score, &signals)
 		}
 	}
+	inspectSemanticTemporalRisk(rt, cfg, clientIP, r.URL.Path, r.UserAgent(), now, &score, &signals)
 
 	action := semanticActionNone
 	if score >= cfg.LogThreshold {
@@ -217,7 +233,8 @@ func EvaluateSemantic(r *http.Request) semanticEvaluation {
 
 	eval := semanticEvaluation{
 		Score:   score,
-		Reasons: reasons,
+		Reasons: semanticReasons(signals),
+		Signals: signals,
 		Action:  action,
 	}
 	rt.observe(eval)
@@ -327,6 +344,7 @@ func buildSemanticRuntimeFromRaw(raw []byte) (*runtimeSemanticConfig, error) {
 
 	return &runtimeSemanticConfig{
 		Raw:                 norm,
+		temporal:            newTemporalRiskStore(norm),
 		challengeCookieName: "__mamotama_semantic_ok",
 		challengeSecret:     secret,
 		challengeTTL:        12 * time.Hour,
@@ -352,6 +370,30 @@ func normalizeSemanticConfig(cfg semanticConfig) (semanticConfig, error) {
 	if cfg.MaxInspectBody <= 0 {
 		cfg.MaxInspectBody = 16 * 1024
 	}
+	if cfg.TemporalWindowSeconds <= 0 {
+		cfg.TemporalWindowSeconds = defaultTemporalWindowSeconds
+	}
+	if cfg.TemporalMaxEntriesPerIP <= 0 {
+		cfg.TemporalMaxEntriesPerIP = defaultTemporalMaxEntriesPerIP
+	}
+	if cfg.TemporalBurstThreshold <= 0 {
+		cfg.TemporalBurstThreshold = defaultTemporalBurstThreshold
+	}
+	if cfg.TemporalBurstScore <= 0 {
+		cfg.TemporalBurstScore = defaultTemporalBurstScore
+	}
+	if cfg.TemporalPathFanoutThreshold <= 0 {
+		cfg.TemporalPathFanoutThreshold = defaultTemporalPathFanoutThreshold
+	}
+	if cfg.TemporalPathFanoutScore <= 0 {
+		cfg.TemporalPathFanoutScore = defaultTemporalPathFanoutScore
+	}
+	if cfg.TemporalUAChurnThreshold <= 0 {
+		cfg.TemporalUAChurnThreshold = defaultTemporalUAChurnThreshold
+	}
+	if cfg.TemporalUAChurnScore <= 0 {
+		cfg.TemporalUAChurnScore = defaultTemporalUAChurnScore
+	}
 	if !cfg.Enabled {
 		cfg.Mode = semanticModeOff
 		return cfg, nil
@@ -373,6 +415,30 @@ func normalizeSemanticConfig(cfg semanticConfig) (semanticConfig, error) {
 	}
 	if cfg.MaxInspectBody <= 0 || cfg.MaxInspectBody > 1024*1024 {
 		return semanticConfig{}, fmt.Errorf("max_inspect_body must be between 1 and 1048576")
+	}
+	if cfg.TemporalWindowSeconds <= 0 || cfg.TemporalWindowSeconds > 600 {
+		return semanticConfig{}, fmt.Errorf("temporal_window_seconds must be between 1 and 600")
+	}
+	if cfg.TemporalMaxEntriesPerIP <= 0 || cfg.TemporalMaxEntriesPerIP > 4096 {
+		return semanticConfig{}, fmt.Errorf("temporal_max_entries_per_ip must be between 1 and 4096")
+	}
+	if cfg.TemporalBurstThreshold <= 0 {
+		return semanticConfig{}, fmt.Errorf("temporal_burst_threshold must be > 0")
+	}
+	if cfg.TemporalBurstScore <= 0 {
+		return semanticConfig{}, fmt.Errorf("temporal_burst_score must be > 0")
+	}
+	if cfg.TemporalPathFanoutThreshold <= 0 {
+		return semanticConfig{}, fmt.Errorf("temporal_path_fanout_threshold must be > 0")
+	}
+	if cfg.TemporalPathFanoutScore <= 0 {
+		return semanticConfig{}, fmt.Errorf("temporal_path_fanout_score must be > 0")
+	}
+	if cfg.TemporalUAChurnThreshold <= 0 {
+		return semanticConfig{}, fmt.Errorf("temporal_ua_churn_threshold must be > 0")
+	}
+	if cfg.TemporalUAChurnScore <= 0 {
+		return semanticConfig{}, fmt.Errorf("temporal_ua_churn_score must be > 0")
 	}
 
 	return cfg, nil
@@ -402,46 +468,37 @@ func sanitizeSemanticText(v string) string {
 	return strings.TrimSpace(v)
 }
 
-func inspectSemanticText(scope, raw string, score *int, reasons *[]string) {
+func inspectSemanticText(scope, raw string, score *int, signals *[]semanticSignal) {
 	norm := normalizeSemanticInput(raw)
 	if norm == "" {
 		return
 	}
 	if len(norm) > 1024 {
-		*score++
-		appendSemanticReason(reasons, scope+":long_payload")
+		appendSemanticSignal(signals, score, scope+":long_payload", 1)
 	}
 	if strings.Count(norm, "%") >= 8 || strings.Count(norm, "\\x") >= 2 {
-		*score++
-		appendSemanticReason(reasons, scope+":high_encoding_density")
+		appendSemanticSignal(signals, score, scope+":high_encoding_density", 1)
 	}
 	if semanticPatternCommentObf.MatchString(norm) {
-		*score += 2
-		appendSemanticReason(reasons, scope+":comment_obfuscation")
+		appendSemanticSignal(signals, score, scope+":comment_obfuscation", 2)
 	}
 	if semanticPatternUnionSelect.MatchString(norm) {
-		*score += 4
-		appendSemanticReason(reasons, scope+":sql_union_select")
+		appendSemanticSignal(signals, score, scope+":sql_union_select", 4)
 	}
 	if semanticPatternBooleanSQL.MatchString(norm) {
-		*score += 2
-		appendSemanticReason(reasons, scope+":sql_boolean_chain")
+		appendSemanticSignal(signals, score, scope+":sql_boolean_chain", 2)
 	}
 	if semanticPatternSQLMeta.MatchString(norm) {
-		*score += 3
-		appendSemanticReason(reasons, scope+":sql_meta_keyword")
+		appendSemanticSignal(signals, score, scope+":sql_meta_keyword", 3)
 	}
 	if semanticPatternPathTrav.MatchString(norm) {
-		*score += 3
-		appendSemanticReason(reasons, scope+":path_traversal")
+		appendSemanticSignal(signals, score, scope+":path_traversal", 3)
 	}
 	if semanticPatternXSS.MatchString(norm) {
-		*score += 3
-		appendSemanticReason(reasons, scope+":xss_pattern")
+		appendSemanticSignal(signals, score, scope+":xss_pattern", 3)
 	}
 	if semanticPatternCmd.MatchString(norm) {
-		*score += 3
-		appendSemanticReason(reasons, scope+":command_chain")
+		appendSemanticSignal(signals, score, scope+":command_chain", 3)
 	}
 }
 
@@ -464,13 +521,39 @@ func normalizeSemanticInput(raw string) string {
 	return strings.TrimSpace(v)
 }
 
-func appendSemanticReason(reasons *[]string, reason string) {
-	for _, existing := range *reasons {
-		if existing == reason {
+func appendSemanticSignal(signals *[]semanticSignal, score *int, reason string, delta int) {
+	for _, existing := range *signals {
+		if existing.Reason == reason {
 			return
 		}
 	}
-	*reasons = append(*reasons, reason)
+	*signals = append(*signals, semanticSignal{Reason: reason, Score: delta})
+	*score += delta
+}
+
+func semanticReasons(signals []semanticSignal) []string {
+	if len(signals) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(signals))
+	for _, signal := range signals {
+		out = append(out, signal.Reason)
+	}
+	return out
+}
+
+func semanticSignalLogObjects(signals []semanticSignal) []map[string]any {
+	if len(signals) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(signals))
+	for _, signal := range signals {
+		out = append(out, map[string]any{
+			"reason": signal.Reason,
+			"score":  signal.Score,
+		})
+	}
+	return out
 }
 
 func issueSemanticChallengeToken(rt *runtimeSemanticConfig, ipStr, userAgent string, now time.Time) string {
@@ -529,7 +612,15 @@ func ensureSemanticFile(path string) error {
   "log_threshold": 7,
   "challenge_threshold": 10,
   "block_threshold": 13,
-  "max_inspect_body": 8192
+  "max_inspect_body": 8192,
+  "temporal_window_seconds": 10,
+  "temporal_max_entries_per_ip": 128,
+  "temporal_burst_threshold": 20,
+  "temporal_burst_score": 2,
+  "temporal_path_fanout_threshold": 8,
+  "temporal_path_fanout_score": 2,
+  "temporal_ua_churn_threshold": 4,
+  "temporal_ua_churn_score": 1
 }
 `
 	return os.WriteFile(path, []byte(defaultRaw), 0o644)
