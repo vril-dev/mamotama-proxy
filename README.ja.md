@@ -436,6 +436,7 @@ Claudeコマンドプロバイダのローカルモックテスト:
 | メソッド | パス | 説明 |
 | --- | --- | --- |
 | GET | `/mamotama-api/status` | 現在のWAF設定状態を取得 |
+| GET | `/mamotama-api/metrics` | rate limit / semantic の実行カウンタを Prometheus 形式で出力 |
 | GET | `/mamotama-api/logs/read` | WAFログ（tail）を取得（`country` クエリで国別フィルタ可） |
 | GET | `/mamotama-api/logs/stats` | WAFブロック統計 + 時間別seriesを取得（`hours` / `scan` クエリ対応） |
 | GET | `/mamotama-api/logs/download` | WAFログファイル（`waf`）をダウンロード |
@@ -460,7 +461,7 @@ Claudeコマンドプロバイダのローカルモックテスト:
 | GET  | `/mamotama-api/semantic-rules` | Semantic設定と実行統計を取得 |
 | POST | `/mamotama-api/semantic-rules:validate` | Semantic設定の構文検証のみ（保存なし） |
 | PUT  | `/mamotama-api/semantic-rules` | Semantic設定ファイルを保存（`If-Match` に `ETag` を指定して楽観ロック） |
-| POST | `/mamotama-api/fp-tuner/propose` | リクエスト入力または最新 `waf_block` ログからFP調整案を生成 |
+| POST | `/mamotama-api/fp-tuner/propose` | リクエスト入力（`event` または `events[]`）または最新 `waf_block` / `semantic_anomaly` ログからFP調整案を生成 |
 | POST | `/mamotama-api/fp-tuner/apply` | 調整案の検証/適用（既定は `simulate=true`、実適用は承認トークン必須設定可） |
 | GET  | `/mamotama-api/cache-rules` | cache.conf の現在内容（Raw + 構造化）と `ETag` を返す |
 | POST | `/mamotama-api/cache-rules:validate` | 送信内容の構文・検証のみ（保存なし） |
@@ -517,11 +518,18 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 | `enabled` | `true` / `false` | レート制限全体の有効/無効。`false` なら全リクエストを素通し。 |
 | `allowlist_ips` | `["127.0.0.1/32", "10.0.0.5"]` | 一致IPは常に制限対象外。CIDRと単体IPの両方を指定可。 |
 | `allowlist_countries` | `["JP", "US"]` | 一致国コードは常に制限対象外。 |
+| `session_cookie_names` | `["session", "sid"]` | `key_by` が session 系のときに参照する Cookie 名。 |
+| `jwt_header_names` | `["Authorization"]` | JWT subject 抽出に使うヘッダ名。 |
+| `jwt_cookie_names` | `["token", "access_token"]` | JWT subject 抽出に使う Cookie 名。 |
+| `adaptive_enabled` | `true` / `false` | semantic リスクスコアが高いクライアントだけ制限を自動で厳しくする。 |
+| `adaptive_score_threshold` | `6` | adaptive 制御を開始する最小リスクスコア。 |
+| `adaptive_limit_factor_percent` | `50` | adaptive 時に `limit` へ掛ける割合。 |
+| `adaptive_burst_factor_percent` | `50` | adaptive 時に `burst` へ掛ける割合。 |
 | `default_policy.enabled` | `true` | デフォルトポリシー自体の有効/無効。 |
 | `default_policy.limit` | `120` | ウィンドウ期間内の基本許可回数。 |
 | `default_policy.burst` | `20` | `limit` に上乗せする瞬間許容量。実効上限は `limit + burst`。 |
 | `default_policy.window_seconds` | `60` | カウント窓の秒数。短いほど厳密、長いほど緩やか。 |
-| `default_policy.key_by` | `"ip"` | 集計キー。`ip` / `country` / `ip_country`。 |
+| `default_policy.key_by` | `"ip"` | 集計キー。`ip` / `country` / `ip_country` / `session` / `ip_session` / `jwt_sub` / `ip_jwt_sub`。 |
 | `default_policy.action.status` | `429` | 超過時のHTTPステータス。`4xx/5xx`のみ。 |
 | `default_policy.action.retry_after_seconds` | `60` | `Retry-After` ヘッダ秒数。`0` なら次ウィンドウまでの残秒を自動計算。 |
 | `rules[]` | 下記参照 | 条件一致時に `default_policy` より優先して適用。先頭から順に評価。 |
@@ -534,6 +542,8 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 
 - 全体を一時停止したい: `enabled=false`
 - 短時間スパイクに強くしたい: `burst` を増やす
+- ログイン単位・ユーザー単位に分けたい: `key_by="session"` または `key_by="jwt_sub"`
+- 怪しいクライアントだけ厳しくしたい: `adaptive_enabled=true`
 - ログインだけ厳しくしたい: `rules` に `match_type=prefix`, `match_value=/login`, `methods=["POST"]` を追加
 - 同一IP内で国別に分けたい: `key_by="ip_country"`
 - 特定拠点を除外したい: `allowlist_ips` または `allowlist_countries` に追加
@@ -573,6 +583,16 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 | `challenge_threshold` | `7` | `challenge` モードで challenge 応答にする最小スコア。 |
 | `block_threshold` | `9` | `block` モードで `403` にする最小スコア。 |
 | `max_inspect_body` | `16384` | semantic が検査するリクエストボディ最大バイト数。 |
+| `temporal_window_seconds` | `10` | IP ごとの時系列観測に使うスライディングウィンドウ秒数。 |
+| `temporal_max_entries_per_ip` | `128` | IP ごとに保持する観測数の上限。 |
+| `temporal_burst_threshold` | `20` | `temporal:ip_burst` を発火させるリクエスト数閾値。 |
+| `temporal_burst_score` | `2` | `temporal:ip_burst` 発火時に加点するスコア。 |
+| `temporal_path_fanout_threshold` | `8` | `temporal:ip_path_fanout` を発火させる distinct path 数。 |
+| `temporal_path_fanout_score` | `2` | `temporal:ip_path_fanout` 発火時に加点するスコア。 |
+| `temporal_ua_churn_threshold` | `4` | `temporal:ip_ua_churn` を発火させる distinct User-Agent 数。 |
+| `temporal_ua_churn_score` | `1` | `temporal:ip_ua_churn` 発火時に加点するスコア。 |
+
+`semantic_anomaly` ログには `reason_list` と `score_breakdown` が入り、`/mamotama-api/metrics` では rate limit / semantic の実行カウンタを取得できます。
 
 ### ルールファイル編集（複数対応）
 

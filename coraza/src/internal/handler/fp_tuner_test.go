@@ -363,6 +363,115 @@ func TestRequestFPTunerProposalHTTPStatusError(t *testing.T) {
 	}
 }
 
+func TestResolveFPTunerEventInputsRejectsMixedInput(t *testing.T) {
+	_, _, err := resolveFPTunerEventInputs(fpTunerProposeBody{
+		Event: &fpTunerEventInput{Path: "/search"},
+		Events: []fpTunerEventInput{
+			{Path: "/login"},
+		},
+	})
+	if err == nil {
+		t.Fatal("resolveFPTunerEventInputs should reject mixed event and events")
+	}
+}
+
+func TestProposeFPTuningBatchMockReturnsV2(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	restore := saveFPTunerConfigForTest()
+	defer restore()
+	config.RulesFile = "rules/mamotama.conf"
+	config.CRSEnable = false
+	config.FPTunerMode = "mock"
+	config.FPTunerRequireApproval = false
+
+	reqBody := `{
+		"target_path":"rules/mamotama.conf",
+		"events":[
+			{"path":"/search","rule_id":100004,"matched_variable":"ARGS:q","matched_value":"q=test"},
+			{"path":"/login","rule_id":100005,"matched_variable":"ARGS:username","matched_value":"admin"}
+		]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/mamotama-api/fp-tuner/propose", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+
+	ProposeFPTuning(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	var out struct {
+		OK              bool   `json:"ok"`
+		Count           int    `json:"count"`
+		ContractVersion string `json:"contract_version"`
+		Proposals       []struct {
+			Input struct {
+				Path string `json:"path"`
+			} `json:"input"`
+			Proposal struct {
+				ID string `json:"id"`
+			} `json:"proposal"`
+		} `json:"proposals"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("response decode error: %v", err)
+	}
+	if !out.OK {
+		t.Fatalf("response ok=false: %s", w.Body.String())
+	}
+	if out.ContractVersion != "fp_tuner.v2" {
+		t.Fatalf("contract_version=%q want=fp_tuner.v2", out.ContractVersion)
+	}
+	if out.Count != 2 || len(out.Proposals) != 2 {
+		t.Fatalf("count/proposals mismatch: count=%d proposals=%d body=%s", out.Count, len(out.Proposals), w.Body.String())
+	}
+	if out.Proposals[0].Input.Path != "/search" || out.Proposals[1].Input.Path != "/login" {
+		t.Fatalf("unexpected batch proposal order: %s", w.Body.String())
+	}
+}
+
+func TestProposeFPTuningUnsafeProposalReturns422(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"proposal":{"id":"fp-http-unsafe","summary":"bad","rule_line":"SecAction \"id:1,phase:1,pass\""}}`))
+	}))
+	defer srv.Close()
+
+	restore := saveFPTunerConfigForTest()
+	defer restore()
+	config.RulesFile = "rules/mamotama.conf"
+	config.CRSEnable = false
+	config.FPTunerMode = "http"
+	config.FPTunerEndpoint = srv.URL
+	config.FPTunerTimeout = 2 * time.Second
+	config.FPTunerRequireApproval = false
+
+	reqBody := `{
+		"target_path":"rules/mamotama.conf",
+		"event":{"path":"/search","rule_id":100004,"matched_variable":"ARGS:q","matched_value":"q=test"}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/mamotama-api/fp-tuner/propose", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+
+	ProposeFPTuning(c)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "provider returned unsafe proposal") {
+		t.Fatalf("unexpected body: %s", w.Body.String())
+	}
+}
+
 func saveFPTunerConfigForTest() func() {
 	oldRulesFile := config.RulesFile
 	oldCRSEnable := config.CRSEnable
