@@ -144,7 +144,13 @@ You can still edit source under `web/mamotama-admin/` and rebuild assets for emb
 | `/bot-defense` | View/edit bot-defense config directly (`bot-defense.conf`) |
 | `/semantic` | View/edit semantic security config directly (`semantic.conf`) |
 | `/cache-rules` | Visual + raw editing for cache rules (`cache.conf`), with Validate/Save |
-| `/proxy-rules` | View/validate/probe/update/rollback upstream + transport tuning (`conf/proxy.json`) |
+| `/proxy-rules` | View/validate/probe/update/rollback upstream + transport + maintenance/redirect fallback tuning (`conf/proxy.json`) |
+
+Upstream failure response behavior:
+- If `error_html_file` and `error_redirect_url` are both unset, the proxy returns the default `502 Bad Gateway` response and the browser shows a simple built-in error page.
+- If `error_html_file` is set, HTML-capable clients receive that maintenance page and other clients receive plain text `503 Service Unavailable`.
+- If `error_redirect_url` is set, `GET` / `HEAD` requests are redirected there and other methods receive plain text `503 Service Unavailable`.
+- `error_html_file` and `error_redirect_url` are mutually exclusive; choose one per protected application.
 
 ### Screenshots
 

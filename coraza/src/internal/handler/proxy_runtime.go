@@ -59,6 +59,8 @@ type ProxyRulesConfig struct {
 	HealthCheckPath     string `json:"health_check_path"`
 	HealthCheckInterval int    `json:"health_check_interval_sec"`
 	HealthCheckTimeout  int    `json:"health_check_timeout_sec"`
+	ErrorHTMLFile       string `json:"error_html_file"`
+	ErrorRedirectURL    string `json:"error_redirect_url"`
 }
 
 type proxyRulesPreparedUpdate struct {
@@ -66,6 +68,7 @@ type proxyRulesPreparedUpdate struct {
 	target *url.URL
 	raw    string
 	etag   string
+	errRes proxyErrorResponse
 }
 
 type proxyRulesConflictError struct {
@@ -91,6 +94,7 @@ type proxyRuntime struct {
 	reverseProxy  *httputil.ReverseProxy
 	transport     *dynamicProxyTransport
 	health        *upstreamHealthMonitor
+	errRes        proxyErrorResponse
 	rollbackMax   int
 	rollbackStack []proxyRollbackEntry
 }
@@ -131,9 +135,7 @@ func InitProxyRuntime(configPath string, rollbackMax int) error {
 		},
 		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write([]byte(`{"error":"upstream unavailable"}`))
+			currentProxyErrorResponse().Write(w, r)
 			log.Printf("[PROXY][ERROR] upstream unavailable method=%s path=%s err=%v", r.Method, r.URL.Path, err)
 		},
 	}
@@ -148,6 +150,7 @@ func InitProxyRuntime(configPath string, rollbackMax int) error {
 		target:        prepared.target,
 		reverseProxy:  rp,
 		transport:     transport,
+		errRes:        prepared.errRes,
 		rollbackMax:   clampProxyRollbackMax(rollbackMax),
 		rollbackStack: make([]proxyRollbackEntry, 0, clampProxyRollbackMax(rollbackMax)),
 	}
@@ -190,6 +193,17 @@ func currentProxyConfig() ProxyRulesConfig {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 	return rt.cfg
+}
+
+func currentProxyErrorResponse() proxyErrorResponse {
+	rt := proxyRuntimeInstance()
+	if rt == nil {
+		resp, _ := newProxyErrorResponse(ProxyRulesConfig{})
+		return resp
+	}
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.errRes
 }
 
 func ServeProxy(w http.ResponseWriter, r *http.Request) {
@@ -264,6 +278,7 @@ func ApplyProxyRulesRaw(ifMatch string, raw string) (string, ProxyRulesConfig, e
 	rt.etag = prepared.etag
 	rt.cfg = prepared.cfg
 	rt.target = prepared.target
+	rt.errRes = prepared.errRes
 	rt.reverseProxy.FlushInterval = time.Duration(prepared.cfg.FlushIntervalMS) * time.Millisecond
 	if rt.health != nil {
 		rt.health.Update(prepared.cfg)
@@ -325,6 +340,7 @@ func RollbackProxyRules() (string, ProxyRulesConfig, proxyRollbackEntry, error) 
 	rt.etag = prepared.etag
 	rt.cfg = prepared.cfg
 	rt.target = prepared.target
+	rt.errRes = prepared.errRes
 	rt.reverseProxy.FlushInterval = time.Duration(prepared.cfg.FlushIntervalMS) * time.Millisecond
 	if rt.health != nil {
 		rt.health.Update(prepared.cfg)
@@ -431,7 +447,7 @@ func ProxyProbe(raw string, timeout time.Duration) (ProxyRulesConfig, string, in
 }
 
 func prepareProxyRulesRaw(raw string) (proxyRulesPreparedUpdate, error) {
-	cfg, target, err := parseProxyRulesRaw(raw)
+	cfg, target, errRes, err := parseProxyRulesRaw(raw)
 	if err != nil {
 		return proxyRulesPreparedUpdate{}, err
 	}
@@ -441,84 +457,92 @@ func prepareProxyRulesRaw(raw string) (proxyRulesPreparedUpdate, error) {
 		target: target,
 		raw:    normalizedRaw,
 		etag:   bypassconf.ComputeETag([]byte(normalizedRaw)),
+		errRes: errRes,
 	}, nil
 }
 
-func parseProxyRulesRaw(raw string) (ProxyRulesConfig, *url.URL, error) {
+func parseProxyRulesRaw(raw string) (ProxyRulesConfig, *url.URL, proxyErrorResponse, error) {
 	var in ProxyRulesConfig
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
-		return ProxyRulesConfig{}, nil, err
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("invalid json")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("invalid json")
 	}
 	return normalizeAndValidateProxyRules(in)
 }
 
-func normalizeAndValidateProxyRules(in ProxyRulesConfig) (ProxyRulesConfig, *url.URL, error) {
+func normalizeAndValidateProxyRules(in ProxyRulesConfig) (ProxyRulesConfig, *url.URL, proxyErrorResponse, error) {
 	cfg := normalizeProxyRulesConfig(in)
 	cfg.UpstreamURL = strings.TrimSpace(cfg.UpstreamURL)
 	if cfg.UpstreamURL == "" {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("upstream_url is required")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("upstream_url is required")
 	}
 	target, err := url.Parse(cfg.UpstreamURL)
 	if err != nil {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("upstream_url parse error: %w", err)
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("upstream_url parse error: %w", err)
 	}
 	if target.Scheme == "" || target.Host == "" {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("upstream_url must include scheme and host")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("upstream_url must include scheme and host")
 	}
 	scheme := strings.ToLower(strings.TrimSpace(target.Scheme))
 	if scheme != "http" && scheme != "https" {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("upstream_url scheme must be http or https")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("upstream_url scheme must be http or https")
 	}
 
 	if cfg.DialTimeout <= 0 {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("dial_timeout must be > 0")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("dial_timeout must be > 0")
 	}
 	if cfg.ResponseHeaderTimeout <= 0 {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("response_header_timeout must be > 0")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("response_header_timeout must be > 0")
 	}
 	if cfg.IdleConnTimeout <= 0 {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("idle_conn_timeout must be > 0")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("idle_conn_timeout must be > 0")
 	}
 	if cfg.MaxIdleConns <= 0 {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("max_idle_conns must be > 0")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("max_idle_conns must be > 0")
 	}
 	if cfg.MaxIdleConnsPerHost <= 0 {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("max_idle_conns_per_host must be > 0")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("max_idle_conns_per_host must be > 0")
 	}
 	if cfg.MaxConnsPerHost <= 0 {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("max_conns_per_host must be > 0")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("max_conns_per_host must be > 0")
 	}
 	if cfg.ExpectContinueTimeout <= 0 {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("expect_continue_timeout must be > 0")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("expect_continue_timeout must be > 0")
 	}
 	if cfg.MaxResponseBufferBytes < 0 {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("max_response_buffer_bytes must be >= 0")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("max_response_buffer_bytes must be >= 0")
 	}
 	if cfg.FlushIntervalMS < 0 {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("flush_interval_ms must be >= 0")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("flush_interval_ms must be >= 0")
 	}
 	if cfg.HealthCheckInterval <= 0 {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("health_check_interval_sec must be > 0")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("health_check_interval_sec must be > 0")
 	}
 	if cfg.HealthCheckTimeout <= 0 {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("health_check_timeout_sec must be > 0")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("health_check_timeout_sec must be > 0")
 	}
 	if cfg.HealthCheckPath != "" && !strings.HasPrefix(cfg.HealthCheckPath, "/") {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("health_check_path must start with '/'")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("health_check_path must start with '/'")
+	}
+	if cfg.ErrorHTMLFile != "" && cfg.ErrorRedirectURL != "" {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("error_html_file and error_redirect_url are mutually exclusive")
 	}
 	if (cfg.TLSClientCert != "" || cfg.TLSClientKey != "") && scheme != "https" {
-		return ProxyRulesConfig{}, nil, fmt.Errorf("tls_client_cert and tls_client_key require https upstream_url")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("tls_client_cert and tls_client_key require https upstream_url")
 	}
 	if _, err := buildProxyTLSClientConfig(cfg); err != nil {
-		return ProxyRulesConfig{}, nil, err
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
+	}
+	errRes, err := newProxyErrorResponse(cfg)
+	if err != nil {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
 	}
 	cfg.UpstreamURL = target.String()
-	return cfg, target, nil
+	return cfg, target, errRes, nil
 }
 
 func normalizeProxyRulesConfig(in ProxyRulesConfig) ProxyRulesConfig {
@@ -546,6 +570,8 @@ func normalizeProxyRulesConfig(in ProxyRulesConfig) ProxyRulesConfig {
 	}
 	out.TLSClientCert = strings.TrimSpace(out.TLSClientCert)
 	out.TLSClientKey = strings.TrimSpace(out.TLSClientKey)
+	out.ErrorHTMLFile = strings.TrimSpace(out.ErrorHTMLFile)
+	out.ErrorRedirectURL = strings.TrimSpace(out.ErrorRedirectURL)
 	out.HealthCheckPath = normalizeProxyHealthCheckPath(out.HealthCheckPath)
 	if out.HealthCheckInterval == 0 {
 		out.HealthCheckInterval = defaultProxyHealthCheckIntervalSec
@@ -638,8 +664,16 @@ func safeProxyURL(raw string) string {
 	return v
 }
 
+func safeProxyValue(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return "-"
+	}
+	return v
+}
+
 func emitProxyConfigApplied(msg string, cfg ProxyRulesConfig) {
-	log.Printf("[PROXY][INFO] %s upstream=%s force_http2=%t disable_compression=%t expect_continue_timeout=%ds buffer_request_body=%t max_response_buffer_bytes=%d flush_interval_ms=%d health_check_path=%s health_check_interval_sec=%d health_check_timeout_sec=%d tls_insecure_skip_verify=%t mtls=%t", msg, cfg.UpstreamURL, cfg.ForceHTTP2, cfg.DisableCompression, cfg.ExpectContinueTimeout, cfg.BufferRequestBody, cfg.MaxResponseBufferBytes, cfg.FlushIntervalMS, cfg.HealthCheckPath, cfg.HealthCheckInterval, cfg.HealthCheckTimeout, cfg.TLSInsecureSkipVerify, cfg.TLSClientCert != "")
+	log.Printf("[PROXY][INFO] %s upstream=%s force_http2=%t disable_compression=%t expect_continue_timeout=%ds buffer_request_body=%t max_response_buffer_bytes=%d flush_interval_ms=%d health_check_path=%s health_check_interval_sec=%d health_check_timeout_sec=%d error_html_file=%s error_redirect_url=%s tls_insecure_skip_verify=%t mtls=%t", msg, cfg.UpstreamURL, cfg.ForceHTTP2, cfg.DisableCompression, cfg.ExpectContinueTimeout, cfg.BufferRequestBody, cfg.MaxResponseBufferBytes, cfg.FlushIntervalMS, cfg.HealthCheckPath, cfg.HealthCheckInterval, cfg.HealthCheckTimeout, safeProxyValue(cfg.ErrorHTMLFile), safeProxyValue(cfg.ErrorRedirectURL), cfg.TLSInsecureSkipVerify, cfg.TLSClientCert != "")
 }
 
 func emitProxyTLSInsecureWarning(cfg ProxyRulesConfig) {
@@ -775,7 +809,7 @@ func maybeBufferProxyResponseBody(res *http.Response) error {
 }
 
 func probeProxyUpstream(rawURL string, timeout time.Duration) (string, int64, error) {
-	cfg, target, err := normalizeAndValidateProxyRules(ProxyRulesConfig{UpstreamURL: rawURL})
+	cfg, target, _, err := normalizeAndValidateProxyRules(ProxyRulesConfig{UpstreamURL: rawURL})
 	if err != nil {
 		return "", 0, err
 	}

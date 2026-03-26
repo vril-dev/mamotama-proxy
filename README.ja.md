@@ -145,7 +145,13 @@ sudo sysctl --system
 | `/bot-defense` | Bot defense設定の閲覧・編集（bot-defense.conf を直接操作） |
 | `/semantic` | Semantic Security設定の閲覧・編集（semantic.conf を直接操作） |
 | `/cache-rules` | Cache Rules の可視化・編集（cache.conf の表編集／Raw編集、Validate/Save対応） |
-| `/proxy-rules` | 上流URL・Transport設定の検証/プローブ/更新/ロールバック（`conf/proxy.json`） |
+| `/proxy-rules` | 上流URL・Transport設定・保守ページ/redirect設定の検証/プローブ/更新/ロールバック（`conf/proxy.json`） |
+
+上流障害時レスポンスの挙動:
+- `error_html_file` と `error_redirect_url` の両方が未設定なら、proxy は既定の `502 Bad Gateway` を返し、ブラウザでは簡素な標準エラーページが表示されます。
+- `error_html_file` を設定すると、HTML を受け取るクライアントにはその保守ページを返し、それ以外には plain text の `503 Service Unavailable` を返します。
+- `error_redirect_url` を設定すると、`GET` / `HEAD` はその URL へ redirect し、それ以外のメソッドには plain text の `503 Service Unavailable` を返します。
+- `error_html_file` と `error_redirect_url` は排他的です。保護対象アプリごとにどちらか一方を選んでください。
 
 ### 画面キャプチャ
 
