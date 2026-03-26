@@ -435,6 +435,7 @@ This keeps external provider payload small by sending one selected event at a ti
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/mamotama-api/status` | Get current WAF status/config |
+| GET | `/mamotama-api/metrics` | Export Prometheus-style runtime counters for rate limit and semantic scoring |
 | GET | `/mamotama-api/logs/read` | Read WAF logs (`tail`) with optional country filter via `country` query |
 | GET | `/mamotama-api/logs/stats` | Return WAF block summary + hourly series (`hours`, `scan` query supported) |
 | GET | `/mamotama-api/logs/download` | Download WAF log file (`waf`) |
@@ -459,7 +460,7 @@ This keeps external provider payload small by sending one selected event at a ti
 | GET | `/mamotama-api/semantic-rules` | Get semantic security config and runtime stats |
 | POST | `/mamotama-api/semantic-rules:validate` | Validate semantic config (no save) |
 | PUT | `/mamotama-api/semantic-rules` | Save semantic config (`If-Match` optimistic lock via `ETag`) |
-| POST | `/mamotama-api/fp-tuner/propose` | Build FP tuning proposal from request payload or latest `waf_block` log event |
+| POST | `/mamotama-api/fp-tuner/propose` | Build FP tuning proposal from request payload (`event` or `events[]`) or latest `waf_block` / `semantic_anomaly` log event |
 | POST | `/mamotama-api/fp-tuner/apply` | Validate/apply proposed scoped exclusion rule (`simulate=true` by default, approval token required for real apply when enabled) |
 | GET | `/mamotama-api/cache-rules` | Return `cache.conf` raw + structured data with `ETag` |
 | POST | `/mamotama-api/cache-rules:validate` | Validate cache config (no save) |
@@ -514,11 +515,18 @@ On exceed, response uses `action.status` (typically `429`) and includes `Retry-A
 | `enabled` | `true` / `false` | Enables/disables rate limit globally. `false` means pass-through. |
 | `allowlist_ips` | `["127.0.0.1/32", "10.0.0.5"]` | Always exempt matching IP/CIDR from rate limiting. |
 | `allowlist_countries` | `["JP", "US"]` | Always exempt matching country codes. |
+| `session_cookie_names` | `["session", "sid"]` | Cookie names checked when `key_by` uses session identity. |
+| `jwt_header_names` | `["Authorization"]` | Header names checked for JWT subject extraction. |
+| `jwt_cookie_names` | `["token", "access_token"]` | Cookie names checked for JWT subject extraction. |
+| `adaptive_enabled` | `true` / `false` | Tighten rate limits automatically when semantic risk score is high. |
+| `adaptive_score_threshold` | `6` | Minimum semantic risk score that activates adaptive throttling. |
+| `adaptive_limit_factor_percent` | `50` | Percentage applied to `limit` when adaptive mode is active. |
+| `adaptive_burst_factor_percent` | `50` | Percentage applied to `burst` when adaptive mode is active. |
 | `default_policy.enabled` | `true` | Enable/disable default policy itself. |
 | `default_policy.limit` | `120` | Base allowed requests per window. |
 | `default_policy.burst` | `20` | Additional burst allowance. Effective cap is `limit + burst`. |
 | `default_policy.window_seconds` | `60` | Window size in seconds. Smaller is stricter. |
-| `default_policy.key_by` | `"ip"` | Aggregation key: `ip` / `country` / `ip_country`. |
+| `default_policy.key_by` | `"ip"` | Aggregation key: `ip` / `country` / `ip_country` / `session` / `ip_session` / `jwt_sub` / `ip_jwt_sub`. |
 | `default_policy.action.status` | `429` | HTTP status on exceed (`4xx`/`5xx`). |
 | `default_policy.action.retry_after_seconds` | `60` | `Retry-After` value in seconds. If `0`, remaining window time is auto-calculated. |
 | `rules[]` | see below | Overrides `default_policy` when matched. Evaluated top-down. |
@@ -531,6 +539,8 @@ On exceed, response uses `action.status` (typically `429`) and includes `Retry-A
 
 - Temporarily disable globally: set `enabled=false`
 - Improve spike tolerance: increase `burst`
+- Apply per-login or per-user throttling: set `key_by="session"` or `key_by="jwt_sub"`
+- Tighten suspicious clients automatically: enable `adaptive_enabled`
 - Tighten login path: add a rule with `match_type=prefix`, `match_value=/login`, `methods=["POST"]`
 - Separate by IP + country: set `key_by="ip_country"`
 - Exempt trusted locations: add to `allowlist_ips` or `allowlist_countries`
@@ -570,6 +580,16 @@ This is a heuristic detector (rule-based, non-ML) with staged enforcement: `off 
 | `challenge_threshold` | `7` | Minimum score to issue semantic challenge in `challenge` mode. |
 | `block_threshold` | `9` | Minimum score to hard-block (`403`) in `block` mode. |
 | `max_inspect_body` | `16384` | Max request body bytes inspected by semantic scoring. |
+| `temporal_window_seconds` | `10` | Sliding window used for per-IP temporal observations. |
+| `temporal_max_entries_per_ip` | `128` | Max in-memory observations kept per IP within the temporal window. |
+| `temporal_burst_threshold` | `20` | Request-count threshold for `temporal:ip_burst`. |
+| `temporal_burst_score` | `2` | Score added when `temporal:ip_burst` fires. |
+| `temporal_path_fanout_threshold` | `8` | Distinct-path threshold for `temporal:ip_path_fanout`. |
+| `temporal_path_fanout_score` | `2` | Score added when `temporal:ip_path_fanout` fires. |
+| `temporal_ua_churn_threshold` | `4` | Distinct-User-Agent threshold for `temporal:ip_ua_churn`. |
+| `temporal_ua_churn_score` | `1` | Score added when `temporal:ip_ua_churn` fires. |
+
+`semantic_anomaly` logs include `reason_list` and `score_breakdown`, and `/mamotama-api/metrics` exposes Prometheus-style counters for rate limiting and semantic actions.
 
 ### Rule File Editing (multi-file aware)
 

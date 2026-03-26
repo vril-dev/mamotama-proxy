@@ -2,6 +2,8 @@ package handler
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,9 +90,12 @@ func TestEvaluateRateLimit_BlocksAfterLimit(t *testing.T) {
 	rateCounterMu.Unlock()
 
 	now := time.Unix(1_700_000_000, 0).UTC()
-	d1 := EvaluateRateLimit("GET", "/items", "10.0.0.1", "JP", now)
-	d2 := EvaluateRateLimit("GET", "/items", "10.0.0.1", "JP", now.Add(1*time.Second))
-	d3 := EvaluateRateLimit("GET", "/items", "10.0.0.1", "JP", now.Add(2*time.Second))
+	r1 := httptest.NewRequest("GET", "/items", nil)
+	r2 := httptest.NewRequest("GET", "/items", nil)
+	r3 := httptest.NewRequest("GET", "/items", nil)
+	d1 := EvaluateRateLimit(r1, "10.0.0.1", "JP", 0, now)
+	d2 := EvaluateRateLimit(r2, "10.0.0.1", "JP", 0, now.Add(1*time.Second))
+	d3 := EvaluateRateLimit(r3, "10.0.0.1", "JP", 0, now.Add(2*time.Second))
 
 	if !d1.Allowed || !d2.Allowed {
 		t.Fatalf("first two requests should be allowed: d1=%+v d2=%+v", d1, d2)
@@ -100,6 +105,114 @@ func TestEvaluateRateLimit_BlocksAfterLimit(t *testing.T) {
 	}
 	if d3.Status != 429 {
 		t.Fatalf("blocked status=%d want=429", d3.Status)
+	}
+}
+
+func TestEvaluateRateLimit_UsesSessionAndAdaptiveScore(t *testing.T) {
+	raw := `{
+  "enabled": true,
+  "session_cookie_names": ["session_id"],
+  "adaptive_enabled": true,
+  "adaptive_score_threshold": 6,
+  "adaptive_limit_factor_percent": 50,
+  "adaptive_burst_factor_percent": 0,
+  "default_policy": {
+    "enabled": true,
+    "limit": 4,
+    "window_seconds": 60,
+    "burst": 0,
+    "key_by": "session",
+    "action": {"status": 429, "retry_after_seconds": 30}
+  },
+  "rules": []
+}`
+	rt, err := ValidateRateLimitRaw(raw)
+	if err != nil {
+		t.Fatalf("ValidateRateLimitRaw() unexpected error: %v", err)
+	}
+
+	restore := saveRateLimitStateForTest()
+	defer restore()
+	rateLimitMu.Lock()
+	rateLimitRuntime = rt
+	rateLimitMu.Unlock()
+	rateCounterMu.Lock()
+	rateCounters = map[string]rateCounter{}
+	rateCounterSweep = 0
+	rateCounterMu.Unlock()
+
+	now := time.Unix(1_700_100_000, 0).UTC()
+	req1 := httptest.NewRequest("GET", "/items", nil)
+	req1.AddCookie(mustCookie("session_id", "abc"))
+	req2 := httptest.NewRequest("GET", "/items", nil)
+	req2.AddCookie(mustCookie("session_id", "abc"))
+	req3 := httptest.NewRequest("GET", "/items", nil)
+	req3.AddCookie(mustCookie("session_id", "abc"))
+
+	d1 := EvaluateRateLimit(req1, "10.0.0.1", "JP", 6, now)
+	d2 := EvaluateRateLimit(req2, "10.0.0.2", "JP", 6, now.Add(time.Second))
+	d3 := EvaluateRateLimit(req3, "10.0.0.3", "JP", 6, now.Add(2*time.Second))
+
+	if !d1.Allowed || !d2.Allowed {
+		t.Fatalf("first two adaptive session requests should be allowed: d1=%+v d2=%+v", d1, d2)
+	}
+	if d3.Allowed {
+		t.Fatalf("third adaptive session request should be blocked: d3=%+v", d3)
+	}
+	if !d3.Adaptive {
+		t.Fatalf("expected adaptive decision: %+v", d3)
+	}
+	if d3.BaseLimit != 4 || d3.Limit != 2 {
+		t.Fatalf("unexpected adaptive limits: %+v", d3)
+	}
+}
+
+func TestEvaluateRateLimit_UsesJWTSubjectKey(t *testing.T) {
+	raw := `{
+  "enabled": true,
+  "jwt_header_names": ["Authorization"],
+  "default_policy": {
+    "enabled": true,
+    "limit": 1,
+    "window_seconds": 60,
+    "burst": 0,
+    "key_by": "jwt_sub",
+    "action": {"status": 429, "retry_after_seconds": 30}
+  },
+  "rules": []
+}`
+	rt, err := ValidateRateLimitRaw(raw)
+	if err != nil {
+		t.Fatalf("ValidateRateLimitRaw() unexpected error: %v", err)
+	}
+
+	restore := saveRateLimitStateForTest()
+	defer restore()
+	rateLimitMu.Lock()
+	rateLimitRuntime = rt
+	rateLimitMu.Unlock()
+	rateCounterMu.Lock()
+	rateCounters = map[string]rateCounter{}
+	rateCounterSweep = 0
+	rateCounterMu.Unlock()
+
+	now := time.Unix(1_700_200_000, 0).UTC()
+	req1 := httptest.NewRequest("GET", "/items", nil)
+	req1.Header.Set("Authorization", "Bearer header.eyJzdWIiOiJ1c2VyLTEifQ.sig")
+	req2 := httptest.NewRequest("GET", "/items", nil)
+	req2.Header.Set("Authorization", "Bearer header.eyJzdWIiOiJ1c2VyLTEifQ.sig")
+
+	d1 := EvaluateRateLimit(req1, "10.0.0.1", "JP", 0, now)
+	d2 := EvaluateRateLimit(req2, "10.0.0.2", "JP", 0, now.Add(time.Second))
+
+	if !d1.Allowed {
+		t.Fatalf("first jwt subject request should be allowed: %+v", d1)
+	}
+	if d2.Allowed {
+		t.Fatalf("second jwt subject request should be blocked across IPs: %+v", d2)
+	}
+	if d2.KeyBy != rateLimitKeyByJWTSub {
+		t.Fatalf("unexpected key_by: %+v", d2)
 	}
 }
 
@@ -207,6 +320,10 @@ func saveRateLimitStateForTest() func() {
 	}
 	oldSweep := rateCounterSweep
 	rateCounterMu.Unlock()
+	oldRequests := rateLimitRequestsTotal.Load()
+	oldAllowed := rateLimitAllowedTotal.Load()
+	oldBlocked := rateLimitBlockedTotal.Load()
+	oldAdaptive := rateLimitAdaptiveTotal.Load()
 
 	return func() {
 		rateLimitMu.Lock()
@@ -218,6 +335,10 @@ func saveRateLimitStateForTest() func() {
 		rateCounters = oldCounters
 		rateCounterSweep = oldSweep
 		rateCounterMu.Unlock()
+		rateLimitRequestsTotal.Store(oldRequests)
+		rateLimitAllowedTotal.Store(oldAllowed)
+		rateLimitBlockedTotal.Store(oldBlocked)
+		rateLimitAdaptiveTotal.Store(oldAdaptive)
 	}
 }
 
@@ -236,4 +357,8 @@ func rateLimitRawForTest(limit int) string {
   },
   "rules": []
 }`, limit)
+}
+
+func mustCookie(name, value string) *http.Cookie {
+	return &http.Cookie{Name: name, Value: value}
 }
