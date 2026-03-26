@@ -56,11 +56,15 @@ var (
 
 type fpTunerEventInput struct {
 	EventID         string `json:"event_id,omitempty"`
+	EventType       string `json:"event_type,omitempty"`
 	ObservedAt      string `json:"observed_at,omitempty"`
 	Method          string `json:"method,omitempty"`
 	Path            string `json:"path,omitempty"`
+	Policy          string `json:"policy,omitempty"`
 	RuleID          int    `json:"rule_id,omitempty"`
 	Status          int    `json:"status,omitempty"`
+	Score           int    `json:"score,omitempty"`
+	Reason          string `json:"reason,omitempty"`
 	MatchedVariable string `json:"matched_variable,omitempty"`
 	MatchedValue    string `json:"matched_value,omitempty"`
 }
@@ -335,12 +339,12 @@ func resolveFPTunerEventInput(in *fpTunerEventInput) (fpTunerEventInput, string,
 		return norm, "request", nil
 	}
 
-	event, err := latestWAFBlockEvent()
+	event, source, err := latestSecurityEvent()
 	if err != nil {
 		return fpTunerEventInput{}, "", err
 	}
 
-	return normalizeFPTunerEventInput(event), "waf_log", nil
+	return normalizeFPTunerEventInput(event), source, nil
 }
 
 func latestWAFBlockEvent() (fpTunerEventInput, error) {
@@ -384,23 +388,98 @@ func latestWAFBlockEvent() (fpTunerEventInput, error) {
 	return fpTunerEventInput{}, fmt.Errorf("no waf_block event found in %s", path)
 }
 
+func latestSecurityEvent() (fpTunerEventInput, string, error) {
+	if event, err := latestWAFBlockEvent(); err == nil {
+		return event, "waf_log", nil
+	}
+
+	path, ok := logFiles["waf"]
+	if !ok {
+		return fpTunerEventInput{}, "", fmt.Errorf("waf log source is not configured")
+	}
+	path = resolveLogPath("waf", path)
+
+	lines, _, _, _, err := readByLine(path, 120, nil, "")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fpTunerEventInput{}, "", fmt.Errorf("waf event log not found: %s", path)
+		}
+		return fpTunerEventInput{}, "", err
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if event, ok := fpTunerEventInputFromLogLine(lines[i]); ok {
+			return event, "security_log", nil
+		}
+	}
+	return fpTunerEventInput{}, "", fmt.Errorf("no waf_block or semantic_anomaly event found in %s", path)
+}
+
+func fpTunerEventInputFromLogLine(ln logLine) (fpTunerEventInput, bool) {
+	eventType := strings.TrimSpace(anyToString(ln["event"]))
+	switch eventType {
+	case "waf_block":
+		return fpTunerEventInput{
+			EventID:         anyToString(ln["req_id"]),
+			EventType:       eventType,
+			ObservedAt:      anyToString(ln["ts"]),
+			Method:          anyToString(ln["method"]),
+			Path:            anyToString(ln["path"]),
+			Policy:          "waf",
+			RuleID:          anyToInt(ln["rule_id"]),
+			Status:          anyToInt(ln["status"]),
+			MatchedVariable: anyToString(ln["matched_variable"]),
+			MatchedValue:    anyToString(ln["matched_value"]),
+		}, true
+	case "semantic_anomaly":
+		return fpTunerEventInput{
+			EventID:    anyToString(ln["req_id"]),
+			EventType:  eventType,
+			ObservedAt: anyToString(ln["ts"]),
+			Method:     anyToString(ln["method"]),
+			Path:       anyToString(ln["path"]),
+			Policy:     "semantic",
+			Status:     anyToInt(ln["status"]),
+			Score:      anyToInt(ln["score"]),
+			Reason:     firstNonEmptyString(anyToString(ln["reason"]), anyToString(ln["reasons"])),
+		}, true
+	default:
+		return fpTunerEventInput{}, false
+	}
+}
+
 func normalizeFPTunerEventInput(in fpTunerEventInput) fpTunerEventInput {
 	in.EventID = strings.TrimSpace(in.EventID)
+	in.EventType = strings.TrimSpace(in.EventType)
 	in.ObservedAt = strings.TrimSpace(in.ObservedAt)
 	in.Method = strings.ToUpper(strings.TrimSpace(in.Method))
 	if in.Method == "" {
 		in.Method = http.MethodGet
 	}
 	in.Path = normalizeFPTunerPath(in.Path)
+	in.Policy = strings.TrimSpace(in.Policy)
 	if in.RuleID <= 0 {
 		in.RuleID = fpTunerDefaultRuleID
 	}
 	if in.Status <= 0 {
 		in.Status = http.StatusForbidden
 	}
+	if in.Score < 0 {
+		in.Score = 0
+	}
+	in.Reason = clampText(strings.TrimSpace(in.Reason), fpTunerMaxMatchedValueBytes)
 	in.MatchedVariable = normalizeFPTunerVariable(in.MatchedVariable)
 	in.MatchedValue = clampText(strings.TrimSpace(in.MatchedValue), fpTunerMaxMatchedValueBytes)
 	return in
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func normalizeFPTunerPath(v string) string {

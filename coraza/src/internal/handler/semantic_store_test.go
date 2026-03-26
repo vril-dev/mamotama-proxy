@@ -113,6 +113,60 @@ func TestEvaluateSemantic_ChallengeCookiePass(t *testing.T) {
 	}
 }
 
+func TestEvaluateSemantic_TemporalPathFanoutBlock(t *testing.T) {
+	raw := `{
+  "enabled": true,
+  "mode": "block",
+  "exempt_path_prefixes": [],
+  "log_threshold": 2,
+  "challenge_threshold": 2,
+  "block_threshold": 2,
+  "max_inspect_body": 16384,
+  "temporal_window_seconds": 30,
+  "temporal_max_entries_per_ip": 32,
+  "temporal_burst_threshold": 100,
+  "temporal_burst_score": 2,
+  "temporal_path_fanout_threshold": 3,
+  "temporal_path_fanout_score": 2,
+  "temporal_ua_churn_threshold": 100,
+  "temporal_ua_churn_score": 1
+}`
+	rt, err := ValidateSemanticRaw(raw)
+	if err != nil {
+		t.Fatalf("ValidateSemanticRaw() unexpected error: %v", err)
+	}
+
+	semanticMu.Lock()
+	prev := semanticRuntime
+	semanticRuntime = rt
+	semanticMu.Unlock()
+	defer func() {
+		semanticMu.Lock()
+		semanticRuntime = prev
+		semanticMu.Unlock()
+	}()
+
+	base := time.Unix(1_700_000_000, 0).UTC()
+	for _, path := range []string{"/a", "/b"} {
+		req := httptest.NewRequest(http.MethodGet, "http://example.test"+path, nil)
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		eval := EvaluateSemanticWithContext(req, "10.0.0.1", base)
+		if eval.Action != semanticActionNone {
+			t.Fatalf("expected no action before threshold, got=%+v", eval)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/c", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	eval := EvaluateSemanticWithContext(req, "10.0.0.1", base.Add(2*time.Second))
+	if eval.Action != semanticActionBlock {
+		t.Fatalf("expected block action from temporal fanout, got=%+v", eval)
+	}
+	if !strings.Contains(strings.Join(eval.Reasons, ","), "temporal:ip_path_fanout") {
+		t.Fatalf("expected temporal fanout reason, got=%v", eval.Reasons)
+	}
+}
+
 func TestSyncSemanticStorage_SeedsDBFromFileWhenMissingBlob(t *testing.T) {
 	restore := saveSemanticStateForTest()
 	defer restore()

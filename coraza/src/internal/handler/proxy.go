@@ -185,23 +185,25 @@ func ProxyHandler(c *gin.Context) {
 		return
 	}
 
-	semanticEval := EvaluateSemantic(c.Request)
+	semanticEval := EvaluateSemanticWithContext(c.Request, clientIP, time.Now().UTC())
 	if semanticEval.Score > 0 {
 		c.Header("X-Mamotama-Semantic-Score", strconv.Itoa(semanticEval.Score))
 	}
 	if semanticEval.Action != semanticActionNone {
 		evt := map[string]any{
-			"ts":      time.Now().UTC().Format(time.RFC3339Nano),
-			"service": "coraza",
-			"level":   "WARN",
-			"event":   "semantic_anomaly",
-			"req_id":  reqID,
-			"ip":      clientIP,
-			"country": country,
-			"path":    c.Request.URL.Path,
-			"action":  semanticEval.Action,
-			"score":   semanticEval.Score,
-			"reasons": strings.Join(semanticEval.Reasons, ","),
+			"ts":              time.Now().UTC().Format(time.RFC3339Nano),
+			"service":         "coraza",
+			"level":           "WARN",
+			"event":           "semantic_anomaly",
+			"req_id":          reqID,
+			"ip":              clientIP,
+			"country":         country,
+			"path":            c.Request.URL.Path,
+			"action":          semanticEval.Action,
+			"score":           semanticEval.Score,
+			"reasons":         strings.Join(semanticEval.Reasons, ","),
+			"reason_list":     append([]string(nil), semanticEval.Reasons...),
+			"score_breakdown": semanticSignalLogObjects(semanticEval.Signals),
 		}
 		emitJSONLog(evt)
 		_ = appendEventToFile(evt)
