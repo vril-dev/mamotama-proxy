@@ -379,7 +379,7 @@ Set API key in `Settings` (`X-API-Key`) and operate via `/mamotama-api/*`.
 make help
 make build          # one-shot: web build + embed sync + go binary
 make check          # go-test + ui-test + compose config checks
-make smoke          # embedded UI + proxy-rules smoke checks
+make smoke          # embedded UI + proxy-rules + route rewrite smoke checks
 make ci-local       # local CI baseline (check + smoke)
 make compose-down
 ```
@@ -1023,7 +1023,7 @@ GitHub Actions workflow `ci` validates:
 - `go test ./...` (`coraza/src`)
 - `docker compose config` sanity check
 - MySQL log-store integration test (`go test ./internal/handler -run TestLogsStatsMySQLStoreAggregatesAndIngestsIncrementally`, with `docker compose --profile mysql up -d mysql`)
-- Proxy admin smoke (`./scripts/ci_proxy_admin_smoke.sh`: embedded UI + `proxy-rules` validate/probe/dry-run/PUT/rollback + ETag conflict)
+- Proxy admin smoke (`./scripts/ci_proxy_admin_smoke.sh`: embedded UI + `proxy-rules` validate/probe/dry-run/PUT/rollback + route rewrite + ETag conflict)
 - `./scripts/run_gotestwaf.sh` (`waf-test` matrix, `MIN_BLOCKED_RATIO=70`, with both `storage.backend=file` and `storage.backend=db`)
 
 In production workflows, set these as required branch protection checks:

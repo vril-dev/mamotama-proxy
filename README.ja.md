@@ -378,7 +378,7 @@ make compose-up
 make help
 make build          # 一発: web build + 埋め込み同期 + Goバイナリ生成
 make check          # go-test + ui-test + compose設定検証
-make smoke          # 埋め込みUI + proxy-rules スモーク
+make smoke          # 埋め込みUI + proxy-rules + route rewrite スモーク
 make ci-local       # ローカルCI基準（check + smoke）
 make compose-down
 ```
@@ -1023,7 +1023,7 @@ GitHub Actions の `ci` ワークフローで以下を検証します。
 - `go test ./...`（`coraza/src`）
 - `docker compose config` の妥当性確認
 - MySQL ログストア統合テスト（`docker compose --profile mysql up -d mysql` + `go test ./internal/handler -run TestLogsStatsMySQLStoreAggregatesAndIngestsIncrementally`）
-- Proxy管理スモーク（`./scripts/ci_proxy_admin_smoke.sh`: 埋め込みUI + `proxy-rules` validate/probe/dry-run/PUT/rollback + ETag競合）
+- Proxy管理スモーク（`./scripts/ci_proxy_admin_smoke.sh`: 埋め込みUI + `proxy-rules` validate/probe/dry-run/PUT/rollback + route rewrite + ETag競合）
 - `./scripts/run_gotestwaf.sh`（`waf-test` マトリクス、`MIN_BLOCKED_RATIO=70`、`storage.backend=file/db`）
 
 運用では、以下をブランチ保護の Required Checks に設定してください。
