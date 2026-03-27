@@ -141,6 +141,7 @@ You can still edit source under `web/mamotama-admin/` and rebuild assets for emb
 | `/bypass` | View/edit bypass config directly (`waf.bypass`) |
 | `/country-block` | View/edit country block config directly (`country-block.conf`) |
 | `/rate-limit` | View/edit rate-limit config directly (`rate-limit.conf`) |
+| `/notifications` | View/edit aggregate notification config directly (`conf/notifications.conf`) |
 | `/bot-defense` | View/edit bot-defense config directly (`bot-defense.conf`) |
 | `/semantic` | View/edit semantic security config directly (`semantic.conf`) |
 | `/cache-rules` | Visual + raw editing for cache rules (`cache.conf`), with Validate/Save |
@@ -171,6 +172,9 @@ Upstream failure response behavior:
 
 #### Rate Limit
 ![Rate Limit](docs/images/ui-samples/07-rate-limit.png)
+
+#### Notifications
+![Notifications](docs/images/ui-samples/14-notifications.png)
 
 #### Cache Rules
 ![Cache Rules](docs/images/ui-samples/11-cache-rules.png)
