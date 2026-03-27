@@ -334,6 +334,7 @@ func emitJSONLog(obj map[string]any) {
 	if b, err := json.Marshal(obj); err == nil {
 		log.Println(string(b))
 	}
+	ObserveNotificationLogEvent(obj)
 }
 
 func appendEventToFile(obj map[string]any) error {
@@ -355,4 +356,25 @@ func appendEventToFile(obj map[string]any) error {
 	_, err = f.Write(append(b, '\n'))
 
 	return err
+}
+
+func requestPath(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return ""
+	}
+	return r.URL.Path
+}
+
+func requestRemoteIP(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	host := strings.TrimSpace(r.RemoteAddr)
+	if host == "" {
+		return ""
+	}
+	if idx := strings.LastIndex(host, ":"); idx > 0 {
+		return host[:idx]
+	}
+	return host
 }

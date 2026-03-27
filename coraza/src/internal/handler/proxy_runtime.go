@@ -135,6 +135,16 @@ func InitProxyRuntime(configPath string, rollbackMax int) error {
 		},
 		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			emitJSONLog(map[string]any{
+				"ts":      time.Now().UTC().Format(time.RFC3339Nano),
+				"service": "coraza",
+				"level":   "ERROR",
+				"event":   "proxy_error",
+				"path":    requestPath(r),
+				"ip":      requestRemoteIP(r),
+				"status":  http.StatusBadGateway,
+				"error":   err.Error(),
+			})
 			currentProxyErrorResponse().Write(w, r)
 			log.Printf("[PROXY][ERROR] upstream unavailable method=%s path=%s err=%v", r.Method, r.URL.Path, err)
 		},

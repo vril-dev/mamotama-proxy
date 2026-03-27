@@ -31,6 +31,7 @@ var (
 	RateLimitFile            string
 	BotDefenseFile           string
 	SemanticFile             string
+	NotificationFile         string
 	LogFile                  string
 	StrictOverride           bool
 	APIBasePath              string
@@ -123,6 +124,10 @@ func applyAppConfig(cfg appConfigFile) {
 	SemanticFile = strings.TrimSpace(cfg.Paths.SemanticFile)
 	if SemanticFile == "" {
 		SemanticFile = "conf/semantic.conf"
+	}
+	NotificationFile = strings.TrimSpace(cfg.Paths.NotificationFile)
+	if NotificationFile == "" {
+		NotificationFile = "conf/notifications.conf"
 	}
 	LogFile = strings.TrimSpace(cfg.Paths.LogFile)
 
