@@ -56,8 +56,9 @@ type ProxyRouteMatch struct {
 }
 
 type ProxyRoutePathMatch struct {
-	Type  string `json:"type"`
-	Value string `json:"value"`
+	Type     string `json:"type"`
+	Value    string `json:"value"`
+	compiled *regexp.Regexp
 }
 
 type ProxyRouteAction struct {
@@ -172,9 +173,12 @@ func normalizeProxyRoutePathMatch(in *ProxyRoutePathMatch) *ProxyRoutePathMatch 
 		out.Value = normalizeProxyRoutePrefix(out.Value)
 	case "exact":
 		out.Value = normalizeProxyRouteExactPath(out.Value)
+	case "regex":
+		out.Value = strings.TrimSpace(out.Value)
 	default:
 		out.Value = strings.TrimSpace(out.Value)
 	}
+	out.compiled = nil
 	return &out
 }
 
@@ -310,6 +314,9 @@ func validateProxyRoutes(cfg ProxyRulesConfig) error {
 		if route.Action.PathRewrite != nil && route.Match.Path == nil {
 			return fmt.Errorf("routes[%d].action.path_rewrite requires match.path", i)
 		}
+		if route.Action.PathRewrite != nil && route.Match.Path != nil && route.Match.Path.Type == "regex" {
+			return fmt.Errorf("routes[%d].action.path_rewrite does not support regex path matches", i)
+		}
 	}
 	if cfg.DefaultRoute != nil && proxyRouteEnabled(cfg.DefaultRoute.Enabled) {
 		if err := validateProxyRouteAction(cfg.DefaultRoute.Action, cfg, namedUpstreams, nameCounts, "default_route.action"); err != nil {
@@ -333,15 +340,22 @@ func validateProxyRouteMatch(match ProxyRouteMatch, field string) error {
 		return nil
 	}
 	switch match.Path.Type {
-	case "exact", "prefix":
+	case "exact", "prefix", "regex":
 	default:
-		return fmt.Errorf("%s.path.type must be exact or prefix", field)
+		return fmt.Errorf("%s.path.type must be exact, prefix, or regex", field)
 	}
 	if strings.TrimSpace(match.Path.Value) == "" {
 		return fmt.Errorf("%s.path.value is required", field)
 	}
-	if !strings.HasPrefix(match.Path.Value, "/") {
+	if match.Path.Type != "regex" && !strings.HasPrefix(match.Path.Value, "/") {
 		return fmt.Errorf("%s.path.value must start with '/'", field)
+	}
+	if match.Path.Type == "regex" {
+		compiled, err := regexp.Compile(match.Path.Value)
+		if err != nil {
+			return fmt.Errorf("%s.path.value regex compile error: %w", field, err)
+		}
+		match.Path.compiled = compiled
 	}
 	return nil
 }
@@ -784,17 +798,41 @@ func proxyRoutePathMatchDetails(match *ProxyRoutePathMatch, reqPath string) (boo
 			return true, strings.TrimPrefix(reqPath, match.Value)
 		}
 		return false, ""
+	case "regex":
+		compiled, err := proxyRouteCompiledRegexp(match)
+		if err != nil {
+			return false, ""
+		}
+		return compiled.MatchString(reqPath), ""
 	default:
 		return false, ""
 	}
 }
 
 func rewriteProxyRoutePath(originalPath string, match *ProxyRoutePathMatch, rewritePrefix string) (string, error) {
+	if match != nil && match.Type == "regex" {
+		return "", fmt.Errorf("path rewrite does not support regex path matches")
+	}
 	ok, suffix := proxyRoutePathMatchDetails(match, originalPath)
 	if !ok {
 		return "", fmt.Errorf("path %q does not match route path rule", originalPath)
 	}
 	return joinProxyRoutePath(rewritePrefix, suffix), nil
+}
+
+func proxyRouteCompiledRegexp(match *ProxyRoutePathMatch) (*regexp.Regexp, error) {
+	if match == nil || match.Type != "regex" {
+		return nil, fmt.Errorf("regex path match is not configured")
+	}
+	if match.compiled != nil {
+		return match.compiled, nil
+	}
+	compiled, err := regexp.Compile(match.Value)
+	if err != nil {
+		return nil, err
+	}
+	match.compiled = compiled
+	return compiled, nil
 }
 
 func joinProxyRoutePath(prefix string, suffix string) string {

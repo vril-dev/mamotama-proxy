@@ -180,16 +180,17 @@ sudo sysctl --system
 - `error_redirect_url` を設定すると、`GET` / `HEAD` はその URL へ redirect し、それ以外のメソッドには plain text の `503 Service Unavailable` を返します。
 - `error_html_file` と `error_redirect_url` は排他的です。保護対象アプリごとにどちらか一方を選んでください。
 
-`conf/proxy.json` のフェーズ1/2.1ルーティング:
+`conf/proxy.json` のフェーズ1/2.1/2.2ルーティング:
 - route の評価順は固定です。まず一致した `routes[]`、一致しなければ `default_route`、それも無ければ従来の `upstream_url` / `upstreams[]` にフォールバックします。
 - host match は exact host と `*.example.com` 形式の wildcard host をサポートします。比較は大小文字を無視し、request の port を除去し、末尾の `.` を取り除いて行います。wildcard はサブドメイン専用で、`example.com` 自体は `*.example.com` に一致しません。
-- path match は exact path とセグメント境界を考慮した prefix path をサポートします。prefix `/servicea/` は `/servicea`、`/servicea/`、`/servicea/...` に一致しますが、`/servicea-foo` には一致しません。
+- path match は exact path、セグメント境界を考慮した prefix path、regex path をサポートします。prefix `/servicea/` は `/servicea`、`/servicea/`、`/servicea/...` に一致しますが、`/servicea-foo` には一致しません。regex route は request path のみを対象にし、query は route match に含みません。
 - `action.upstream` は設定済み `upstreams[].name` または絶対 `http(s)` URL を指定できます。未指定時は従来の global upstream 選択を使います。`upstream_url` / `upstreams[]` を使わない構成では、有効な route と `default_route` の `action.upstream` を必ず明示してください。
-- `action.path_rewrite.prefix` は一致した path prefix だけを書き換えます。`/servicea/... -> /...`、`/servicea/... -> /servicea/...`、`/servicea/... -> /service-a/...` を表現できます。転送時は `%2F` のような escaped suffix を保持し、追加の path cleaning は行いません。
+- `action.path_rewrite.prefix` は一致した path prefix だけを書き換えます。`/servicea/... -> /...`、`/servicea/... -> /servicea/...`、`/servicea/... -> /service-a/...` を表現できます。転送時は `%2F` のような escaped suffix を保持し、追加の path cleaning は行いません。phase 2.2 時点では regex path route に `action.path_rewrite.prefix` は使えません。
 - `action.request_headers` は outbound request header の `remove`、`set`、`add` の順で適用します。`Host`、`X-Forwarded-*`、hop-by-hop headers は3操作すべてで拒否します。
 - `action.response_headers` は upstream response header の `remove`、`set`、`add` の順で適用します。`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`Trailer`、`Keep-Alive`、`TE`、`Proxy-Connection`、`Set-Cookie` は拒否します。
 - `POST /mamotama-api/proxy-rules:dry-run` は runtime と同じ route 選択・upstream 解決・path rewrite ロジックを使います。未保存の raw config を検証する場合だけ、現在の health 状態は再利用できないため、global upstream fallback はその raw config の内容に基づいて判定されます。
-- フェーズ2.1時点でも未実装: regex path match、host rewrite、response body rewrite、weighted/canary/mirror routing、query rewrite。
+- `exact` / `prefix` / `regex` の間に暗黙の specificity 優先はありません。`priority` の小さい route が常に先に評価されます。
+- フェーズ2.2時点でも未実装: host rewrite、response body rewrite、weighted/canary/mirror routing、query rewrite。
 
 route 関連ログ:
 - `proxy_route`
@@ -207,7 +208,7 @@ route 関連ログ:
 }
 ```
 
-フェーズ1/2.1 route 設定例:
+フェーズ1/2.1/2.2 route 設定例:
 
 ```json
 {
@@ -246,6 +247,25 @@ route 関連ログ:
     "enabled": true,
     "action": {
       "upstream": "http://fallback.internal:8080"
+    }
+  }
+}
+```
+
+regex route 例:
+
+```json
+{
+  "name": "service-a-orders",
+  "priority": 20,
+  "match": {
+    "hosts": ["api.example.com"],
+    "path": { "type": "regex", "value": "^/servicea/(users|orders)/[0-9]+$" }
+  },
+  "action": {
+    "upstream": "service-a",
+    "response_headers": {
+      "set": { "X-Route-Response": "service-a-orders" }
     }
   }
 }

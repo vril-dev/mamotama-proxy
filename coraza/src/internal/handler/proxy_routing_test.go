@@ -302,6 +302,133 @@ func TestProxyRoutePreservesEncodedSuffixOnRewrite(t *testing.T) {
 	}
 }
 
+func TestValidateProxyRulesRawWithRegexRoute(t *testing.T) {
+	cfg := mustValidateProxyRulesRaw(t, `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "name": "service-a-regex",
+      "priority": 10,
+      "match": {
+        "path": { "type": "regex", "value": "^/servicea/(users|orders)/[0-9]+$" }
+      },
+      "action": {
+        "upstream": "http://127.0.0.1:8081"
+      }
+    }
+  ]
+}`)
+
+	if got := cfg.Routes[0].Match.Path.Type; got != "regex" {
+		t.Fatalf("path.type=%s", got)
+	}
+	if got := cfg.Routes[0].Match.Path.Value; got != "^/servicea/(users|orders)/[0-9]+$" {
+		t.Fatalf("path.value=%s", got)
+	}
+	if cfg.Routes[0].Match.Path.compiled == nil {
+		t.Fatal("compiled regex is nil")
+	}
+}
+
+func TestProxyRouteRegexMatchAndPriority(t *testing.T) {
+	cfg := mustValidateProxyRulesRaw(t, `{
+  "upstream_url": "http://legacy.internal:8080",
+  "routes": [
+    {
+      "name": "prefix-first",
+      "priority": 10,
+      "match": {
+        "path": { "type": "prefix", "value": "/servicea/" }
+      },
+      "action": {
+        "upstream": "http://prefix.internal:8080"
+      }
+    },
+    {
+      "name": "regex-second",
+      "priority": 20,
+      "match": {
+        "path": { "type": "regex", "value": "^/servicea/(users|orders)/[0-9]+$" }
+      },
+      "action": {
+        "upstream": "http://regex.internal:8080"
+      }
+    },
+    {
+      "name": "regex-high-priority",
+      "priority": 5,
+      "match": {
+        "hosts": ["regex.example.com"],
+        "path": { "type": "regex", "value": "^/servicea/(users|orders)/[0-9]+$" }
+      },
+      "action": {
+        "upstream": "http://regex-priority.internal:8080"
+      }
+    }
+  ]
+}`)
+
+	tests := []struct {
+		name       string
+		host       string
+		path       string
+		wantRoute  string
+		wantSource string
+		wantFinal  string
+	}{
+		{
+			name:       "prefix route wins when it has lower priority number",
+			host:       "www.example.com",
+			path:       "/servicea/users/42",
+			wantRoute:  "prefix-first",
+			wantSource: "route",
+			wantFinal:  "http://prefix.internal:8080/servicea/users/42",
+		},
+		{
+			name:       "regex route wins when it has the highest priority",
+			host:       "regex.example.com",
+			path:       "/servicea/orders/7",
+			wantRoute:  "regex-high-priority",
+			wantSource: "route",
+			wantFinal:  "http://regex-priority.internal:8080/servicea/orders/7",
+		},
+		{
+			name:       "regex route does not match unrelated path",
+			host:       "regex.example.com",
+			path:       "/servicea/orders/not-a-number",
+			wantRoute:  "prefix-first",
+			wantSource: "route",
+			wantFinal:  "http://prefix.internal:8080/servicea/orders/not-a-number",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision := mustResolveProxyRouteDecision(t, cfg, tt.host, tt.path)
+			if got := decision.RouteName; got != tt.wantRoute {
+				t.Fatalf("route=%s want=%s", got, tt.wantRoute)
+			}
+			if got := string(decision.Source); got != tt.wantSource {
+				t.Fatalf("source=%s want=%s", got, tt.wantSource)
+			}
+			if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath); got != tt.wantFinal {
+				t.Fatalf("final_url=%s want=%s", got, tt.wantFinal)
+			}
+
+			dryRun, err := proxyRouteDryRun(cfg, tt.host, tt.path)
+			if err != nil {
+				t.Fatalf("proxyRouteDryRun: %v", err)
+			}
+			if got := dryRun.RouteName; got != tt.wantRoute {
+				t.Fatalf("dry-run route=%s want=%s", got, tt.wantRoute)
+			}
+			if got := dryRun.FinalURL; got != tt.wantFinal {
+				t.Fatalf("dry-run final_url=%s want=%s", got, tt.wantFinal)
+			}
+		})
+	}
+}
+
 func TestProxyRouteHostMatchBoundaries(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -387,6 +514,43 @@ func TestValidateProxyRulesRawRejectsInvalidActionUpstream(t *testing.T) {
   ]
 }`,
 			wantErr: "routes[0].action.upstream is required when upstream_url/upstreams are not set",
+		},
+		{
+			name: "invalid regex path",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "match": {
+        "path": { "type": "regex", "value": "^(foo$" }
+      },
+      "action": {
+        "upstream": "http://127.0.0.1:8081"
+      }
+    }
+  ]
+}`,
+			wantErr: "regex compile error",
+		},
+		{
+			name: "regex path rewrite is rejected",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "match": {
+        "path": { "type": "regex", "value": "^/servicea/.+$" }
+      },
+      "action": {
+        "upstream": "http://127.0.0.1:8081",
+        "path_rewrite": { "prefix": "/service-a/" }
+      }
+    }
+  ]
+}`,
+			wantErr: "does not support regex path matches",
 		},
 	}
 
