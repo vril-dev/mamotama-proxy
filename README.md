@@ -181,10 +181,13 @@ Upstream failure response behavior:
 
 Phase-1 routing in `conf/proxy.json`:
 - `routes[]` are evaluated in ascending `priority` order with first-match semantics.
-- Matching supports exact host, `*.example.com` wildcard host, exact path, and segment-safe prefix path.
-- `action.upstream` can point to a configured `upstreams[].name` or an absolute `http(s)` URL. If omitted, the route uses the legacy global upstream selection.
-- `action.path_rewrite.prefix` rewrites only the matched path prefix. Host rewrite, query rewrite, response header rewrite, regex path, weighted/canary/mirror routing are intentionally out of scope for phase 1.
-- `action.request_headers` supports outbound request-header `set`, `add`, and `remove`. `Host`, `X-Forwarded-*`, and hop-by-hop headers are rejected.
+- Route selection order is fixed: matching `routes[]` first, then `default_route`, then legacy `upstream_url` / `upstreams[]`.
+- Host matching supports exact host and `*.example.com` wildcard host. Matching is case-insensitive, strips the request port, trims a trailing dot, and wildcard patterns match subdomains only (`example.com` itself does not match `*.example.com`).
+- Path matching supports exact path and segment-safe prefix path. A prefix `/servicea/` matches `/servicea`, `/servicea/`, and `/servicea/...`, but not `/servicea-foo`.
+- `action.upstream` can point to a configured `upstreams[].name` or an absolute `http(s)` URL. If omitted, the route uses the legacy global upstream selection. When `upstream_url` / `upstreams[]` are not set, each enabled route and `default_route` must declare `action.upstream`.
+- `action.path_rewrite.prefix` rewrites only the matched path prefix. It is intended to cover `/servicea/... -> /...`, `/servicea/... -> /servicea/...`, and `/servicea/... -> /service-a/...`. The proxy preserves escaped suffixes such as `%2F` when forwarding, and it does not apply extra path cleaning.
+- `action.request_headers` supports outbound request-header `remove`, `set`, then `add`. `Host`, `X-Forwarded-*`, and hop-by-hop headers are rejected for all three operations.
+- `POST /mamotama-api/proxy-rules:dry-run` uses the same route selection, upstream resolution, and path rewrite logic as runtime proxying. When you validate unsaved raw config, dry-run cannot reuse the current runtime health state, so global upstream fallback reflects the provided config rather than live backend health.
 - If no route matches, `default_route` is used. If `default_route` is unset, the proxy falls back to legacy `upstream_url` / `upstreams[]`.
 
 Route-related logs include:
