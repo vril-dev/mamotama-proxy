@@ -28,6 +28,7 @@ const (
 	ctxKeyWafRule          ctxKey = "waf_rules"
 	ctxKeyIP               ctxKey = "client_ip"
 	ctxKeyCountry          ctxKey = "country"
+	ctxKeyRouteDecision    ctxKey = "route_decision"
 	ctxKeySelectedUpstream ctxKey = "selected_upstream"
 )
 
@@ -61,7 +62,7 @@ func annotateWAFHit(res *http.Response) {
 	country, _ := ctx.Value(ctxKeyCountry).(string)
 	path := res.Request.URL.Path
 	status := res.StatusCode
-	emitJSONLog(map[string]any{
+	evt := map[string]any{
 		"ts":       time.Now().UTC().Format(time.RFC3339Nano),
 		"service":  "coraza",
 		"level":    "INFO",
@@ -73,7 +74,9 @@ func annotateWAFHit(res *http.Response) {
 		"path":     path,
 		"rules":    res.Header.Get("X-WAF-RuleIDs"),
 		"status":   status,
-	})
+	}
+	appendProxyRouteLogFields(evt, res.Request)
+	emitJSONLog(evt)
 }
 
 func applyCacheHeaders(res *http.Response) {
@@ -146,6 +149,52 @@ func ProxyHandler(c *gin.Context) {
 	reqID := ensureRequestID(c)
 	clientIP := requestClientIP(c)
 	country := normalizeCountryCode(c.GetHeader("X-Country-Code"))
+	proxyCfg := currentProxyConfig()
+	routeDecision, err := resolveProxyRouteDecision(c.Request, proxyCfg, proxyRuntimeHealth())
+	if err != nil {
+		evt := map[string]any{
+			"ts":       time.Now().UTC().Format(time.RFC3339Nano),
+			"service":  "coraza",
+			"level":    "ERROR",
+			"event":    "proxy_route_error",
+			"req_id":   reqID,
+			"trace_id": observability.TraceIDFromContext(c.Request.Context()),
+			"ip":       clientIP,
+			"country":  country,
+			"path":     c.Request.URL.Path,
+			"status":   http.StatusBadGateway,
+			"error":    err.Error(),
+		}
+		appendProxyRouteLogFields(evt, c.Request)
+		emitJSONLog(evt)
+		_ = appendEventToFile(evt)
+		currentProxyErrorResponse().Write(c.Writer, c.Request)
+		c.Abort()
+		return
+	}
+	c.Request = c.Request.WithContext(withProxyRouteDecision(c.Request.Context(), routeDecision))
+	proxyServed := false
+	defer func() {
+		if !proxyServed && routeDecision.HealthKey != "" {
+			releaseProxyRouteDecision(routeDecision)
+		}
+	}()
+	if routeDecision.LogSelection {
+		evt := map[string]any{
+			"ts":       time.Now().UTC().Format(time.RFC3339Nano),
+			"service":  "coraza",
+			"level":    "INFO",
+			"event":    "proxy_route",
+			"req_id":   reqID,
+			"trace_id": observability.TraceIDFromContext(c.Request.Context()),
+			"ip":       clientIP,
+			"country":  country,
+			"path":     c.Request.URL.Path,
+		}
+		appendProxyRouteLogFields(evt, c.Request)
+		emitJSONLog(evt)
+		_ = appendEventToFile(evt)
+	}
 
 	if IsCountryBlocked(country) {
 		evt := map[string]any{
@@ -160,6 +209,7 @@ func ProxyHandler(c *gin.Context) {
 			"path":     c.Request.URL.Path,
 			"status":   http.StatusForbidden,
 		}
+		appendProxyRouteLogFields(evt, c.Request)
 		emitJSONLog(evt)
 		_ = appendEventToFile(evt)
 		c.AbortWithStatus(http.StatusForbidden)
@@ -179,6 +229,7 @@ func ProxyHandler(c *gin.Context) {
 			"path":     c.Request.URL.Path,
 			"status":   statusCode,
 		}
+		appendProxyRouteLogFields(evt, c.Request)
 		emitJSONLog(evt)
 		_ = appendEventToFile(evt)
 		c.AbortWithStatus(statusCode)
@@ -200,6 +251,7 @@ func ProxyHandler(c *gin.Context) {
 			"status":   botDecision.Status,
 			"mode":     botDecision.Mode,
 		}
+		appendProxyRouteLogFields(evt, c.Request)
 		emitJSONLog(evt)
 		_ = appendEventToFile(evt)
 
@@ -229,6 +281,7 @@ func ProxyHandler(c *gin.Context) {
 			"reason_list":     append([]string(nil), semanticEval.Reasons...),
 			"score_breakdown": semanticSignalLogObjects(semanticEval.Signals),
 		}
+		appendProxyRouteLogFields(evt, c.Request)
 		emitJSONLog(evt)
 		_ = appendEventToFile(evt)
 
@@ -267,6 +320,7 @@ func ProxyHandler(c *gin.Context) {
 			"adaptive":    rateDecision.Adaptive,
 			"risk_score":  rateDecision.RiskScore,
 		}
+		appendProxyRouteLogFields(evt, c.Request)
 		emitJSONLog(evt)
 		_ = appendEventToFile(evt)
 		c.Header("Retry-After", strconv.Itoa(rateDecision.RetryAfterSeconds))
@@ -282,6 +336,7 @@ func ProxyHandler(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		proxyServed = true
 		ServeProxy(c.Writer, c.Request)
 		return
 	}
@@ -326,6 +381,7 @@ func ProxyHandler(c *gin.Context) {
 			"rule_id":  it.RuleID,
 			"status":   it.Status,
 		}
+		appendProxyRouteLogFields(evt, c.Request)
 		emitJSONLog(evt)
 		_ = appendEventToFile(evt)
 		c.AbortWithStatus(it.Status)
@@ -336,6 +392,7 @@ func ProxyHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	proxyServed = true
 	ServeProxy(c.Writer, c.Request)
 }
 
@@ -361,6 +418,25 @@ func emitJSONLog(obj map[string]any) {
 		log.Println(string(b))
 	}
 	ObserveNotificationLogEvent(obj)
+}
+
+func proxyRuntimeHealth() *upstreamHealthMonitor {
+	rt := proxyRuntimeInstance()
+	if rt == nil {
+		return nil
+	}
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.health
+}
+
+func releaseProxyRouteDecision(decision proxyRouteDecision) {
+	if decision.HealthKey == "" {
+		return
+	}
+	if health := proxyRuntimeHealth(); health != nil {
+		health.ReleaseTarget(decision.HealthKey)
+	}
 }
 
 func appendEventToFile(obj map[string]any) error {

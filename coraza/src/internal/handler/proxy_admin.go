@@ -17,6 +17,12 @@ type proxyRulesProbeBody struct {
 	TimeoutMS int    `json:"timeout_ms"`
 }
 
+type proxyRulesDryRunBody struct {
+	Raw  string `json:"raw"`
+	Host string `json:"host"`
+	Path string `json:"path"`
+}
+
 func ProxyRulesAction(c *gin.Context) {
 	action := strings.TrimPrefix(strings.TrimSpace(c.Param("action")), ":")
 	switch action {
@@ -24,6 +30,8 @@ func ProxyRulesAction(c *gin.Context) {
 		ValidateProxyRules(c)
 	case "probe":
 		ProbeProxyRules(c)
+	case "dry-run":
+		DryRunProxyRulesHandler(c)
 	case "rollback":
 		RollbackProxyRulesHandler(c)
 	default:
@@ -103,6 +111,47 @@ func ProbeProxyRules(c *gin.Context) {
 			"latency_ms": latencyMS,
 			"timeout_ms": timeout.Milliseconds(),
 		},
+	})
+}
+
+func DryRunProxyRulesHandler(c *gin.Context) {
+	var in proxyRulesDryRunBody
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	path := strings.TrimSpace(in.Path)
+	if path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "messages": []string{"path is required"}})
+		return
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
+	var (
+		cfg ProxyRulesConfig
+		err error
+	)
+	if strings.TrimSpace(in.Raw) == "" {
+		_, _, cfg, _, _ = ProxyRulesSnapshot()
+	} else {
+		cfg, err = ValidateProxyRulesRaw(in.Raw)
+		if err != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"ok": false, "messages": []string{err.Error()}})
+			return
+		}
+	}
+
+	result, err := proxyRouteDryRun(cfg, strings.TrimSpace(in.Host), path)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"ok": false, "messages": []string{err.Error()}, "proxy": cfg})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":      true,
+		"proxy":   cfg,
+		"dry_run": result,
 	})
 }
 

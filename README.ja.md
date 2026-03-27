@@ -172,13 +172,87 @@ sudo sysctl --system
 | `/bot-defense` | Bot defense設定の閲覧・編集（bot-defense.conf を直接操作） |
 | `/semantic` | Semantic Security設定の閲覧・編集（semantic.conf を直接操作） |
 | `/cache-rules` | Cache Rules の可視化・編集（cache.conf の表編集／Raw編集、Validate/Save対応） |
-| `/proxy-rules` | 上流URL・Transport設定・保守ページ/redirect設定の検証/プローブ/更新/ロールバック（`conf/proxy.json`） |
+| `/proxy-rules` | 上流URL・Transport設定・route・保守ページ/redirect設定の検証/プローブ/dry-run/更新/ロールバック（`conf/proxy.json`） |
 
 上流障害時レスポンスの挙動:
 - `error_html_file` と `error_redirect_url` の両方が未設定なら、proxy は既定の `502 Bad Gateway` を返し、ブラウザでは簡素な標準エラーページが表示されます。
 - `error_html_file` を設定すると、HTML を受け取るクライアントにはその保守ページを返し、それ以外には plain text の `503 Service Unavailable` を返します。
 - `error_redirect_url` を設定すると、`GET` / `HEAD` はその URL へ redirect し、それ以外のメソッドには plain text の `503 Service Unavailable` を返します。
 - `error_html_file` と `error_redirect_url` は排他的です。保護対象アプリごとにどちらか一方を選んでください。
+
+`conf/proxy.json` のフェーズ1ルーティング:
+- `routes[]` は `priority` 昇順の first-match で評価します。
+- match は exact host、`*.example.com` 形式の wildcard host、exact path、セグメント境界を考慮した prefix path をサポートします。
+- `action.upstream` は設定済み `upstreams[].name` または絶対 `http(s)` URL を指定できます。未指定時は従来の global upstream 選択を使います。
+- `action.path_rewrite.prefix` は一致した path prefix だけを書き換えます。host rewrite、query rewrite、response header rewrite、regex path、weighted/canary/mirror はフェーズ1の対象外です。
+- `action.request_headers` は outbound request header の `set` / `add` / `remove` をサポートします。`Host`、`X-Forwarded-*`、hop-by-hop headers は拒否します。
+- 一致 route が無ければ `default_route` を使います。`default_route` も無ければ、従来の `upstream_url` / `upstreams[]` へフォールバックします。
+
+route 関連ログ:
+- `proxy_route`
+- `original_host`, `original_path`
+- `rewritten_host`, `rewritten_path`
+- `selected_route`, `selected_upstream`, `selected_upstream_url`
+
+旧形式設定（そのまま有効）:
+
+```json
+{
+  "upstream_url": "http://app.internal:8080",
+  "upstreams": [],
+  "load_balancing_strategy": "round_robin"
+}
+```
+
+フェーズ1 route 設定例:
+
+```json
+{
+  "upstream_url": "http://app.internal:8080",
+  "upstreams": [
+    { "name": "service-a", "url": "http://sv3.internal:8080", "weight": 1, "enabled": true },
+    { "name": "service-b", "url": "http://sv4.internal:8080", "weight": 1, "enabled": true }
+  ],
+  "routes": [
+    {
+      "name": "service-a-prefix",
+      "enabled": true,
+      "priority": 10,
+      "match": {
+        "hosts": ["api.example.com", "*.example.net"],
+        "path": { "type": "prefix", "value": "/servicea/" }
+      },
+      "action": {
+        "upstream": "service-a",
+        "path_rewrite": { "prefix": "/service-a/" },
+        "request_headers": {
+          "set": { "X-Service": "service-a" },
+          "add": { "X-Route": "service-a-prefix" },
+          "remove": ["X-Debug"]
+        }
+      }
+    }
+  ],
+  "default_route": {
+    "name": "fallback",
+    "enabled": true,
+    "action": {
+      "upstream": "http://fallback.internal:8080"
+    }
+  }
+}
+```
+
+dry-run 例:
+
+```bash
+curl -sS \
+  -H "X-API-Key: ${WAF_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  --data '{"host":"api.example.com","path":"/servicea/users"}' \
+  http://127.0.0.1:8080/mamotama-api/proxy-rules:dry-run
+```
 
 ### 画面キャプチャ
 
@@ -507,6 +581,12 @@ Claudeコマンドプロバイダのローカルモックテスト:
 | GET  | `/mamotama-api/cache-rules` | cache.conf の現在内容（Raw + 構造化）と `ETag` を返す |
 | POST | `/mamotama-api/cache-rules:validate` | 送信内容の構文・検証のみ（保存なし） |
 | PUT | `/mamotama-api/cache-rules` | cache.conf を保存（`If-Match` に `ETag` を指定して楽観ロック） |
+| GET  | `/mamotama-api/proxy-rules` | 現在の proxy transport + route 設定（`conf/proxy.json`）を取得 |
+| POST | `/mamotama-api/proxy-rules:validate` | proxy transport + route 設定の構文検証のみ（保存なし） |
+| POST | `/mamotama-api/proxy-rules:probe` | 現在の primary/fallback upstream ターゲットへ TCP プローブ |
+| POST | `/mamotama-api/proxy-rules:dry-run` | `{host,path}` を与えて、選択 route と最終 upstream URL を送信なしで確認 |
+| POST | `/mamotama-api/proxy-rules:rollback` | `conf/proxy.json` を直前の保存スナップショットへロールバック |
+| PUT  | `/mamotama-api/proxy-rules` | `conf/proxy.json` を保存（`If-Match` に `ETag` を指定して楽観ロック） |
 
 
 ログやルールが設定されていない場合は `500` で `{"error": "...説明..."}` を返します。
@@ -893,7 +973,7 @@ GitHub Actions の `ci` ワークフローで以下を検証します。
 - `go test ./...`（`coraza/src`）
 - `docker compose config` の妥当性確認
 - MySQL ログストア統合テスト（`docker compose --profile mysql up -d mysql` + `go test ./internal/handler -run TestLogsStatsMySQLStoreAggregatesAndIngestsIncrementally`）
-- Proxy管理スモーク（`./scripts/ci_proxy_admin_smoke.sh`: 埋め込みUI + `proxy-rules` validate/probe/PUT/rollback + ETag競合）
+- Proxy管理スモーク（`./scripts/ci_proxy_admin_smoke.sh`: 埋め込みUI + `proxy-rules` validate/probe/dry-run/PUT/rollback + ETag競合）
 - `./scripts/run_gotestwaf.sh`（`waf-test` マトリクス、`MIN_BLOCKED_RATIO=70`、`storage.backend=file/db`）
 
 運用では、以下をブランチ保護の Required Checks に設定してください。

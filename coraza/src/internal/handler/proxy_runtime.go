@@ -45,21 +45,23 @@ const (
 )
 
 type ProxyRulesConfig struct {
-	UpstreamURL           string          `json:"upstream_url"`
-	Upstreams             []ProxyUpstream `json:"upstreams,omitempty"`
-	LoadBalancingStrategy string          `json:"load_balancing_strategy,omitempty"`
-	DialTimeout           int             `json:"dial_timeout"`
-	ResponseHeaderTimeout int             `json:"response_header_timeout"`
-	IdleConnTimeout       int             `json:"idle_conn_timeout"`
-	MaxIdleConns          int             `json:"max_idle_conns"`
-	MaxIdleConnsPerHost   int             `json:"max_idle_conns_per_host"`
-	MaxConnsPerHost       int             `json:"max_conns_per_host"`
-	ForceHTTP2            bool            `json:"force_http2"`
-	DisableCompression    bool            `json:"disable_compression"`
-	ExpectContinueTimeout int             `json:"expect_continue_timeout"`
-	TLSInsecureSkipVerify bool            `json:"tls_insecure_skip_verify"`
-	TLSClientCert         string          `json:"tls_client_cert"`
-	TLSClientKey          string          `json:"tls_client_key"`
+	UpstreamURL           string             `json:"upstream_url"`
+	Upstreams             []ProxyUpstream    `json:"upstreams,omitempty"`
+	LoadBalancingStrategy string             `json:"load_balancing_strategy,omitempty"`
+	Routes                []ProxyRoute       `json:"routes,omitempty"`
+	DefaultRoute          *ProxyDefaultRoute `json:"default_route,omitempty"`
+	DialTimeout           int                `json:"dial_timeout"`
+	ResponseHeaderTimeout int                `json:"response_header_timeout"`
+	IdleConnTimeout       int                `json:"idle_conn_timeout"`
+	MaxIdleConns          int                `json:"max_idle_conns"`
+	MaxIdleConnsPerHost   int                `json:"max_idle_conns_per_host"`
+	MaxConnsPerHost       int                `json:"max_conns_per_host"`
+	ForceHTTP2            bool               `json:"force_http2"`
+	DisableCompression    bool               `json:"disable_compression"`
+	ExpectContinueTimeout int                `json:"expect_continue_timeout"`
+	TLSInsecureSkipVerify bool               `json:"tls_insecure_skip_verify"`
+	TLSClientCert         string             `json:"tls_client_cert"`
+	TLSClientKey          string             `json:"tls_client_key"`
 
 	BufferRequestBody      bool  `json:"buffer_request_body"`
 	MaxResponseBufferBytes int64 `json:"max_response_buffer_bytes"`
@@ -139,27 +141,32 @@ func InitProxyRuntime(configPath string, rollbackMax int) error {
 	if err != nil {
 		return fmt.Errorf("build proxy transport: %w", err)
 	}
-	cfgForRewrite := prepared.cfg
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			selection, ok := health.SelectTarget()
-			target := selection.Target
-			if !ok || target == nil {
-				target = currentProxyTarget()
+			target := currentProxyTarget()
+			decision, ok := proxyRouteDecisionFromContext(pr.In.Context())
+			if ok && decision.Target != nil {
+				target = decision.Target
 			}
 			if target == nil {
-				target, _ = proxyPrimaryTarget(cfgForRewrite)
+				target, _ = proxyPrimaryTarget(currentProxyConfig())
 			}
-			pr.SetURL(target)
+			rewriteProxyOutgoingURL(pr.Out, target, pr.In.URL.Path)
+			if ok {
+				rewriteProxyOutgoingURL(pr.Out, target, decision.RewrittenPath)
+			}
 			pr.SetXForwarded()
 			pr.Out.Host = pr.In.Host
-			if selection.Key != "" {
-				pr.Out = pr.Out.WithContext(context.WithValue(pr.Out.Context(), ctxKeySelectedUpstream, selection.Key))
+			if ok {
+				applyProxyRouteRequestHeaders(pr.Out.Header, decision.HeaderOps)
+				if decision.HealthKey != "" {
+					pr.Out = pr.Out.WithContext(context.WithValue(pr.Out.Context(), ctxKeySelectedUpstream, decision.HealthKey))
+				}
 			}
 		},
 		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			emitJSONLog(map[string]any{
+			evt := map[string]any{
 				"ts":       time.Now().UTC().Format(time.RFC3339Nano),
 				"service":  "coraza",
 				"level":    "ERROR",
@@ -169,7 +176,9 @@ func InitProxyRuntime(configPath string, rollbackMax int) error {
 				"ip":       requestRemoteIP(r),
 				"status":   http.StatusBadGateway,
 				"error":    err.Error(),
-			})
+			}
+			appendProxyRouteLogFields(evt, r)
+			emitJSONLog(evt)
 			currentProxyErrorResponse().Write(w, r)
 			log.Printf("[PROXY][ERROR] upstream unavailable method=%s path=%s err=%v", r.Method, r.URL.Path, err)
 		},
@@ -558,6 +567,9 @@ func normalizeAndValidateProxyRules(in ProxyRulesConfig) (ProxyRulesConfig, *url
 	if (cfg.TLSClientCert != "" || cfg.TLSClientKey != "") && !proxyRulesHasHTTPSUpstream(cfg) {
 		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("tls_client_cert and tls_client_key require at least one https upstream")
 	}
+	if err := validateProxyRoutes(cfg); err != nil {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
+	}
 	if _, err := buildProxyTLSClientConfig(cfg); err != nil {
 		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
 	}
@@ -601,6 +613,8 @@ func normalizeProxyRulesConfig(in ProxyRulesConfig) ProxyRulesConfig {
 	out.LoadBalancingStrategy = normalizeProxyLoadBalancingStrategy(out.LoadBalancingStrategy)
 	out.UpstreamURL = strings.TrimSpace(out.UpstreamURL)
 	out.Upstreams = normalizeProxyUpstreams(out.Upstreams)
+	out.Routes = normalizeProxyRoutes(out.Routes)
+	out.DefaultRoute = normalizeProxyDefaultRoute(out.DefaultRoute)
 	out.HealthCheckPath = normalizeProxyHealthCheckPath(out.HealthCheckPath)
 	if out.HealthCheckInterval == 0 {
 		out.HealthCheckInterval = defaultProxyHealthCheckIntervalSec
@@ -681,6 +695,11 @@ func proxyPrimaryTarget(cfg ProxyRulesConfig) (*url.URL, error) {
 	if len(cfg.Upstreams) == 0 {
 		cfg.UpstreamURL = strings.TrimSpace(cfg.UpstreamURL)
 		if cfg.UpstreamURL == "" {
+			if target, ok, err := proxyRouteFallbackTarget(cfg); err != nil {
+				return nil, err
+			} else if ok {
+				return target, nil
+			}
 			return nil, fmt.Errorf("upstream_url is required")
 		}
 		target, err := parseProxyUpstreamURL("upstream_url", cfg.UpstreamURL)
@@ -705,13 +724,20 @@ func proxyPrimaryTarget(cfg ProxyRulesConfig) (*url.URL, error) {
 	if firstEnabled != nil {
 		return firstEnabled, nil
 	}
+	if target, ok, err := proxyRouteFallbackTarget(cfg); err != nil {
+		return nil, err
+	} else if ok {
+		return target, nil
+	}
 	return nil, fmt.Errorf("at least one upstream must be enabled")
 }
 
 func proxyRulesHasHTTPSUpstream(cfg ProxyRulesConfig) bool {
 	if len(cfg.Upstreams) == 0 {
 		target, err := url.Parse(strings.TrimSpace(cfg.UpstreamURL))
-		return err == nil && strings.EqualFold(target.Scheme, "https")
+		if err == nil && strings.EqualFold(target.Scheme, "https") {
+			return true
+		}
 	}
 	for _, upstream := range cfg.Upstreams {
 		if !upstream.Enabled {
@@ -719,6 +745,16 @@ func proxyRulesHasHTTPSUpstream(cfg ProxyRulesConfig) bool {
 		}
 		target, err := url.Parse(strings.TrimSpace(upstream.URL))
 		if err == nil && strings.EqualFold(target.Scheme, "https") {
+			return true
+		}
+	}
+	if cfg.DefaultRoute != nil {
+		if target, ok := proxyDirectRouteTarget(cfg.DefaultRoute.Action.Upstream); ok && strings.EqualFold(target.Scheme, "https") {
+			return true
+		}
+	}
+	for _, route := range cfg.Routes {
+		if target, ok := proxyDirectRouteTarget(route.Action.Upstream); ok && strings.EqualFold(target.Scheme, "https") {
 			return true
 		}
 	}
