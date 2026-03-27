@@ -3,19 +3,21 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 )
 
 type appConfigFile struct {
-	Server  appServerConfig  `json:"server"`
-	Runtime appRuntimeConfig `json:"runtime"`
-	Admin   appAdminConfig   `json:"admin"`
-	Paths   appPathsConfig   `json:"paths"`
-	Proxy   appProxyConfig   `json:"proxy"`
-	CRS     appCRSConfig     `json:"crs"`
-	FPTuner appFPTunerConfig `json:"fp_tuner"`
-	Storage appStorageConfig `json:"storage"`
+	Server        appServerConfig        `json:"server"`
+	Runtime       appRuntimeConfig       `json:"runtime"`
+	Admin         appAdminConfig         `json:"admin"`
+	Paths         appPathsConfig         `json:"paths"`
+	Proxy         appProxyConfig         `json:"proxy"`
+	CRS           appCRSConfig           `json:"crs"`
+	FPTuner       appFPTunerConfig       `json:"fp_tuner"`
+	Storage       appStorageConfig       `json:"storage"`
+	Observability appObservabilityConfig `json:"observability"`
 }
 
 type appServerConfig struct {
@@ -37,6 +39,15 @@ type appServerTLSConfig struct {
 	MinVersion       string `json:"min_version"`
 	RedirectHTTP     bool   `json:"redirect_http"`
 	HTTPRedirectAddr string `json:"http_redirect_addr"`
+	ACME             appServerTLSACMEConfig `json:"acme"`
+}
+
+type appServerTLSACMEConfig struct {
+	Enabled  bool     `json:"enabled"`
+	Email    string   `json:"email"`
+	Domains  []string `json:"domains"`
+	CacheDir string   `json:"cache_dir"`
+	Staging  bool     `json:"staging"`
 }
 
 type appRuntimeConfig struct {
@@ -53,6 +64,18 @@ type appAdminConfig struct {
 	CORSAllowedOrigins    []string `json:"cors_allowed_origins"`
 	StrictOverride        bool     `json:"strict_override"`
 	AllowInsecureDefaults bool     `json:"allow_insecure_defaults"`
+	ExternalMode          string   `json:"external_mode"`
+	TrustedCIDRs          []string `json:"trusted_cidrs"`
+	TrustForwardedFor     bool     `json:"trust_forwarded_for"`
+	RateLimit             appAdminRateLimitConfig `json:"rate_limit"`
+}
+
+type appAdminRateLimitConfig struct {
+	Enabled           bool `json:"enabled"`
+	RPS               int  `json:"rps"`
+	Burst             int  `json:"burst"`
+	StatusCode        int  `json:"status_code"`
+	RetryAfterSeconds int  `json:"retry_after_seconds"`
 }
 
 type appPathsConfig struct {
@@ -64,6 +87,7 @@ type appPathsConfig struct {
 	BotDefenseFile   string `json:"bot_defense_file"`
 	SemanticFile     string `json:"semantic_file"`
 	NotificationFile string `json:"notification_file"`
+	IPReputationFile string `json:"ip_reputation_file"`
 	LogFile          string `json:"log_file"`
 	CRSSetupFile     string `json:"crs_setup_file"`
 	CRSRulesDir      string `json:"crs_rules_dir"`
@@ -97,6 +121,21 @@ type appStorageConfig struct {
 	DBPath            string `json:"db_path"`
 	DBRetentionDays   int    `json:"db_retention_days"`
 	DBSyncIntervalSec int    `json:"db_sync_interval_sec"`
+	FileRotateBytes   int64  `json:"file_rotate_bytes"`
+	FileMaxBytes      int64  `json:"file_max_bytes"`
+	FileRetentionDays int    `json:"file_retention_days"`
+}
+
+type appObservabilityConfig struct {
+	Tracing appTracingConfig `json:"tracing"`
+}
+
+type appTracingConfig struct {
+	Enabled      bool    `json:"enabled"`
+	ServiceName  string  `json:"service_name"`
+	OTLPEndpoint string  `json:"otlp_endpoint"`
+	Insecure     bool    `json:"insecure"`
+	SampleRatio  float64 `json:"sample_ratio"`
 }
 
 func defaultAppConfigFile() appConfigFile {
@@ -117,6 +156,13 @@ func defaultAppConfigFile() appConfigFile {
 				MinVersion:       defaultServerTLSMinVersion,
 				RedirectHTTP:     false,
 				HTTPRedirectAddr: "",
+				ACME: appServerTLSACMEConfig{
+					Enabled:  false,
+					Email:    "",
+					Domains:  nil,
+					CacheDir: "/var/lib/mamotama/acme",
+					Staging:  false,
+				},
 			},
 		},
 		Runtime: appRuntimeConfig{
@@ -132,6 +178,16 @@ func defaultAppConfigFile() appConfigFile {
 			CORSAllowedOrigins:    nil,
 			StrictOverride:        false,
 			AllowInsecureDefaults: false,
+			ExternalMode:          "full_external",
+			TrustedCIDRs:          []string{"127.0.0.1/32", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"},
+			TrustForwardedFor:     false,
+			RateLimit: appAdminRateLimitConfig{
+				Enabled:           false,
+				RPS:               0,
+				Burst:             0,
+				StatusCode:        429,
+				RetryAfterSeconds: 1,
+			},
 		},
 		Paths: appPathsConfig{
 			ProxyConfigFile:  "conf/proxy.json",
@@ -142,6 +198,7 @@ func defaultAppConfigFile() appConfigFile {
 			BotDefenseFile:   "conf/bot-defense.conf",
 			SemanticFile:     "conf/semantic.conf",
 			NotificationFile: "conf/notifications.conf",
+			IPReputationFile: "conf/ip-reputation.conf",
 			LogFile:          "",
 			CRSSetupFile:     "rules/crs/crs-setup.conf",
 			CRSRulesDir:      "rules/crs/rules",
@@ -171,6 +228,18 @@ func defaultAppConfigFile() appConfigFile {
 			DBPath:            "logs/coraza/mamotama.db",
 			DBRetentionDays:   30,
 			DBSyncIntervalSec: 0,
+			FileRotateBytes:   8 * 1024 * 1024,
+			FileMaxBytes:      256 * 1024 * 1024,
+			FileRetentionDays: 7,
+		},
+		Observability: appObservabilityConfig{
+			Tracing: appTracingConfig{
+				Enabled:      false,
+				ServiceName:  "mamotama-proxy",
+				OTLPEndpoint: "",
+				Insecure:     false,
+				SampleRatio:  1.0,
+			},
 		},
 	}
 }
@@ -202,6 +271,7 @@ func normalizeAppConfigFile(cfg *appConfigFile) {
 	cfg.Admin.UIBasePath = strings.TrimSpace(cfg.Admin.UIBasePath)
 	cfg.Admin.APIKeyPrimary = strings.TrimSpace(cfg.Admin.APIKeyPrimary)
 	cfg.Admin.APIKeySecondary = strings.TrimSpace(cfg.Admin.APIKeySecondary)
+	cfg.Admin.ExternalMode = strings.ToLower(strings.TrimSpace(cfg.Admin.ExternalMode))
 	cfg.FPTuner.Mode = strings.ToLower(strings.TrimSpace(cfg.FPTuner.Mode))
 	cfg.FPTuner.Endpoint = strings.TrimSpace(cfg.FPTuner.Endpoint)
 	cfg.FPTuner.APIKey = strings.TrimSpace(cfg.FPTuner.APIKey)
@@ -214,6 +284,7 @@ func normalizeAppConfigFile(cfg *appConfigFile) {
 	cfg.Paths.BotDefenseFile = strings.TrimSpace(cfg.Paths.BotDefenseFile)
 	cfg.Paths.SemanticFile = strings.TrimSpace(cfg.Paths.SemanticFile)
 	cfg.Paths.NotificationFile = strings.TrimSpace(cfg.Paths.NotificationFile)
+	cfg.Paths.IPReputationFile = strings.TrimSpace(cfg.Paths.IPReputationFile)
 	cfg.Paths.LogFile = strings.TrimSpace(cfg.Paths.LogFile)
 	cfg.Paths.CRSSetupFile = strings.TrimSpace(cfg.Paths.CRSSetupFile)
 	cfg.Paths.CRSRulesDir = strings.TrimSpace(cfg.Paths.CRSRulesDir)
@@ -222,6 +293,8 @@ func normalizeAppConfigFile(cfg *appConfigFile) {
 	cfg.Storage.DBDriver = strings.ToLower(strings.TrimSpace(cfg.Storage.DBDriver))
 	cfg.Storage.DBDSN = strings.TrimSpace(cfg.Storage.DBDSN)
 	cfg.Storage.DBPath = strings.TrimSpace(cfg.Storage.DBPath)
+	cfg.Observability.Tracing.ServiceName = strings.TrimSpace(cfg.Observability.Tracing.ServiceName)
+	cfg.Observability.Tracing.OTLPEndpoint = strings.TrimSpace(cfg.Observability.Tracing.OTLPEndpoint)
 }
 
 func validateAppConfigFile(cfg appConfigFile) error {
@@ -249,11 +322,38 @@ func validateAppConfigFile(cfg appConfigFile) error {
 	if cfg.Admin.APIBasePath == cfg.Admin.UIBasePath {
 		return fmt.Errorf("admin.api_base_path and admin.ui_base_path must be different")
 	}
+	switch cfg.Admin.ExternalMode {
+	case "", "deny_external", "api_only_external", "full_external":
+	default:
+		return fmt.Errorf("admin.external_mode must be one of: deny_external, api_only_external, full_external")
+	}
+	for i, raw := range cfg.Admin.TrustedCIDRs {
+		if _, err := netip.ParsePrefix(strings.TrimSpace(raw)); err != nil {
+			return fmt.Errorf("admin.trusted_cidrs[%d] invalid CIDR: %w", i, err)
+		}
+	}
+	if cfg.Admin.RateLimit.RPS < 0 || cfg.Admin.RateLimit.Burst < 0 || cfg.Admin.RateLimit.RetryAfterSeconds < 0 {
+		return fmt.Errorf("admin.rate_limit values must be >= 0")
+	}
+	if cfg.Admin.RateLimit.Enabled {
+		if cfg.Admin.RateLimit.RPS <= 0 {
+			return fmt.Errorf("admin.rate_limit.rps must be > 0 when enabled=true")
+		}
+		if cfg.Admin.RateLimit.Burst <= 0 {
+			return fmt.Errorf("admin.rate_limit.burst must be > 0 when enabled=true")
+		}
+		if cfg.Admin.RateLimit.StatusCode < 400 || cfg.Admin.RateLimit.StatusCode > 599 {
+			return fmt.Errorf("admin.rate_limit.status_code must be between 400 and 599")
+		}
+	}
 	if cfg.Paths.ProxyConfigFile == "" {
 		return fmt.Errorf("paths.proxy_config_file is required")
 	}
 	if cfg.Paths.RulesFile == "" {
 		return fmt.Errorf("paths.rules_file is required")
+	}
+	if cfg.Paths.IPReputationFile == "" {
+		return fmt.Errorf("paths.ip_reputation_file is required")
 	}
 	if cfg.Proxy.RollbackHistorySize < 1 || cfg.Proxy.RollbackHistorySize > 64 {
 		return fmt.Errorf("proxy.rollback_history_size must be between 1 and 64")
@@ -282,6 +382,9 @@ func validateAppConfigFile(cfg appConfigFile) error {
 	if cfg.Storage.DBSyncIntervalSec < 0 {
 		return fmt.Errorf("storage.db_sync_interval_sec must be >= 0")
 	}
+	if cfg.Storage.FileRotateBytes < 0 || cfg.Storage.FileMaxBytes < 0 || cfg.Storage.FileRetentionDays < 0 {
+		return fmt.Errorf("storage.file_* values must be >= 0")
+	}
 	if cfg.FPTuner.Mode != "mock" && cfg.FPTuner.Mode != "http" {
 		return fmt.Errorf("fp_tuner.mode must be one of: mock, http")
 	}
@@ -290,6 +393,17 @@ func validateAppConfigFile(cfg appConfigFile) error {
 	}
 	if cfg.FPTuner.ApprovalTTLSec < 10 || cfg.FPTuner.ApprovalTTLSec > 86400 {
 		return fmt.Errorf("fp_tuner.approval_ttl_sec must be between 10 and 86400")
+	}
+	if cfg.Observability.Tracing.SampleRatio < 0 || cfg.Observability.Tracing.SampleRatio > 1 {
+		return fmt.Errorf("observability.tracing.sample_ratio must be between 0 and 1")
+	}
+	if cfg.Observability.Tracing.Enabled {
+		if cfg.Observability.Tracing.OTLPEndpoint == "" {
+			return fmt.Errorf("observability.tracing.otlp_endpoint is required when enabled=true")
+		}
+		if cfg.Observability.Tracing.ServiceName == "" {
+			return fmt.Errorf("observability.tracing.service_name is required when enabled=true")
+		}
 	}
 	return nil
 }

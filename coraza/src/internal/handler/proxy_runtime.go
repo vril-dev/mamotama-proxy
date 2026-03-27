@@ -20,7 +20,14 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"mamotama/internal/bypassconf"
+	"mamotama/internal/observability"
 )
 
 const (
@@ -38,19 +45,21 @@ const (
 )
 
 type ProxyRulesConfig struct {
-	UpstreamURL           string `json:"upstream_url"`
-	DialTimeout           int    `json:"dial_timeout"`
-	ResponseHeaderTimeout int    `json:"response_header_timeout"`
-	IdleConnTimeout       int    `json:"idle_conn_timeout"`
-	MaxIdleConns          int    `json:"max_idle_conns"`
-	MaxIdleConnsPerHost   int    `json:"max_idle_conns_per_host"`
-	MaxConnsPerHost       int    `json:"max_conns_per_host"`
-	ForceHTTP2            bool   `json:"force_http2"`
-	DisableCompression    bool   `json:"disable_compression"`
-	ExpectContinueTimeout int    `json:"expect_continue_timeout"`
-	TLSInsecureSkipVerify bool   `json:"tls_insecure_skip_verify"`
-	TLSClientCert         string `json:"tls_client_cert"`
-	TLSClientKey          string `json:"tls_client_key"`
+	UpstreamURL           string          `json:"upstream_url"`
+	Upstreams             []ProxyUpstream `json:"upstreams,omitempty"`
+	LoadBalancingStrategy string          `json:"load_balancing_strategy,omitempty"`
+	DialTimeout           int             `json:"dial_timeout"`
+	ResponseHeaderTimeout int             `json:"response_header_timeout"`
+	IdleConnTimeout       int             `json:"idle_conn_timeout"`
+	MaxIdleConns          int             `json:"max_idle_conns"`
+	MaxIdleConnsPerHost   int             `json:"max_idle_conns_per_host"`
+	MaxConnsPerHost       int             `json:"max_conns_per_host"`
+	ForceHTTP2            bool            `json:"force_http2"`
+	DisableCompression    bool            `json:"disable_compression"`
+	ExpectContinueTimeout int             `json:"expect_continue_timeout"`
+	TLSInsecureSkipVerify bool            `json:"tls_insecure_skip_verify"`
+	TLSClientCert         string          `json:"tls_client_cert"`
+	TLSClientKey          string          `json:"tls_client_key"`
 
 	BufferRequestBody      bool  `json:"buffer_request_body"`
 	MaxResponseBufferBytes int64 `json:"max_response_buffer_bytes"`
@@ -61,6 +70,13 @@ type ProxyRulesConfig struct {
 	HealthCheckTimeout  int    `json:"health_check_timeout_sec"`
 	ErrorHTMLFile       string `json:"error_html_file"`
 	ErrorRedirectURL    string `json:"error_redirect_url"`
+}
+
+type ProxyUpstream struct {
+	Name    string `json:"name,omitempty"`
+	URL     string `json:"url"`
+	Weight  int    `json:"weight,omitempty"`
+	Enabled bool   `json:"enabled"`
 }
 
 type proxyRulesPreparedUpdate struct {
@@ -118,32 +134,41 @@ func InitProxyRuntime(configPath string, rollbackMax int) error {
 		return fmt.Errorf("invalid proxy config (%s): %w", path, err)
 	}
 
-	transport, err := newDynamicProxyTransport(prepared.cfg)
+	health := newUpstreamHealthMonitor(prepared.cfg)
+	transport, err := newDynamicProxyTransport(prepared.cfg, health)
 	if err != nil {
 		return fmt.Errorf("build proxy transport: %w", err)
 	}
 	cfgForRewrite := prepared.cfg
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			target := currentProxyTarget()
+			selection, ok := health.SelectTarget()
+			target := selection.Target
+			if !ok || target == nil {
+				target = currentProxyTarget()
+			}
 			if target == nil {
-				target = mustURL(cfgForRewrite.UpstreamURL)
+				target, _ = proxyPrimaryTarget(cfgForRewrite)
 			}
 			pr.SetURL(target)
 			pr.SetXForwarded()
 			pr.Out.Host = pr.In.Host
+			if selection.Key != "" {
+				pr.Out = pr.Out.WithContext(context.WithValue(pr.Out.Context(), ctxKeySelectedUpstream, selection.Key))
+			}
 		},
 		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			emitJSONLog(map[string]any{
-				"ts":      time.Now().UTC().Format(time.RFC3339Nano),
-				"service": "coraza",
-				"level":   "ERROR",
-				"event":   "proxy_error",
-				"path":    requestPath(r),
-				"ip":      requestRemoteIP(r),
-				"status":  http.StatusBadGateway,
-				"error":   err.Error(),
+				"ts":       time.Now().UTC().Format(time.RFC3339Nano),
+				"service":  "coraza",
+				"level":    "ERROR",
+				"event":    "proxy_error",
+				"path":     requestPath(r),
+				"trace_id": observability.TraceIDFromContext(r.Context()),
+				"ip":       requestRemoteIP(r),
+				"status":   http.StatusBadGateway,
+				"error":    err.Error(),
 			})
 			currentProxyErrorResponse().Write(w, r)
 			log.Printf("[PROXY][ERROR] upstream unavailable method=%s path=%s err=%v", r.Method, r.URL.Path, err)
@@ -164,7 +189,7 @@ func InitProxyRuntime(configPath string, rollbackMax int) error {
 		rollbackMax:   clampProxyRollbackMax(rollbackMax),
 		rollbackStack: make([]proxyRollbackEntry, 0, clampProxyRollbackMax(rollbackMax)),
 	}
-	rt.health = newUpstreamHealthMonitor(prepared.cfg)
+	rt.health = health
 
 	proxyRuntimeMu.Lock()
 	proxyRt = rt
@@ -452,7 +477,7 @@ func ProxyProbe(raw string, timeout time.Duration) (ProxyRulesConfig, string, in
 		}
 	}
 
-	address, latencyMS, err := probeProxyUpstream(cfg.UpstreamURL, timeout)
+	address, latencyMS, err := probeProxyUpstream(cfg, timeout)
 	return cfg, address, latencyMS, err
 }
 
@@ -486,20 +511,9 @@ func parseProxyRulesRaw(raw string) (ProxyRulesConfig, *url.URL, proxyErrorRespo
 
 func normalizeAndValidateProxyRules(in ProxyRulesConfig) (ProxyRulesConfig, *url.URL, proxyErrorResponse, error) {
 	cfg := normalizeProxyRulesConfig(in)
-	cfg.UpstreamURL = strings.TrimSpace(cfg.UpstreamURL)
-	if cfg.UpstreamURL == "" {
-		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("upstream_url is required")
-	}
-	target, err := url.Parse(cfg.UpstreamURL)
+	target, err := proxyPrimaryTarget(cfg)
 	if err != nil {
-		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("upstream_url parse error: %w", err)
-	}
-	if target.Scheme == "" || target.Host == "" {
-		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("upstream_url must include scheme and host")
-	}
-	scheme := strings.ToLower(strings.TrimSpace(target.Scheme))
-	if scheme != "http" && scheme != "https" {
-		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("upstream_url scheme must be http or https")
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
 	}
 
 	if cfg.DialTimeout <= 0 {
@@ -541,8 +555,8 @@ func normalizeAndValidateProxyRules(in ProxyRulesConfig) (ProxyRulesConfig, *url
 	if cfg.ErrorHTMLFile != "" && cfg.ErrorRedirectURL != "" {
 		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("error_html_file and error_redirect_url are mutually exclusive")
 	}
-	if (cfg.TLSClientCert != "" || cfg.TLSClientKey != "") && scheme != "https" {
-		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("tls_client_cert and tls_client_key require https upstream_url")
+	if (cfg.TLSClientCert != "" || cfg.TLSClientKey != "") && !proxyRulesHasHTTPSUpstream(cfg) {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("tls_client_cert and tls_client_key require at least one https upstream")
 	}
 	if _, err := buildProxyTLSClientConfig(cfg); err != nil {
 		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
@@ -551,7 +565,9 @@ func normalizeAndValidateProxyRules(in ProxyRulesConfig) (ProxyRulesConfig, *url
 	if err != nil {
 		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
 	}
-	cfg.UpstreamURL = target.String()
+	if len(cfg.Upstreams) == 0 {
+		cfg.UpstreamURL = target.String()
+	}
 	return cfg, target, errRes, nil
 }
 
@@ -582,6 +598,9 @@ func normalizeProxyRulesConfig(in ProxyRulesConfig) ProxyRulesConfig {
 	out.TLSClientKey = strings.TrimSpace(out.TLSClientKey)
 	out.ErrorHTMLFile = strings.TrimSpace(out.ErrorHTMLFile)
 	out.ErrorRedirectURL = strings.TrimSpace(out.ErrorRedirectURL)
+	out.LoadBalancingStrategy = normalizeProxyLoadBalancingStrategy(out.LoadBalancingStrategy)
+	out.UpstreamURL = strings.TrimSpace(out.UpstreamURL)
+	out.Upstreams = normalizeProxyUpstreams(out.Upstreams)
 	out.HealthCheckPath = normalizeProxyHealthCheckPath(out.HealthCheckPath)
 	if out.HealthCheckInterval == 0 {
 		out.HealthCheckInterval = defaultProxyHealthCheckIntervalSec
@@ -601,6 +620,109 @@ func normalizeProxyHealthCheckPath(v string) string {
 		x = "/" + x
 	}
 	return x
+}
+
+func normalizeProxyLoadBalancingStrategy(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "round_robin":
+		return "round_robin"
+	case "least_conn":
+		return "least_conn"
+	default:
+		return strings.ToLower(strings.TrimSpace(v))
+	}
+}
+
+func normalizeProxyUpstreams(in []ProxyUpstream) []ProxyUpstream {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ProxyUpstream, 0, len(in))
+	enabledCount := 0
+	for i, upstream := range in {
+		next := upstream
+		next.Name = strings.TrimSpace(next.Name)
+		next.URL = strings.TrimSpace(next.URL)
+		if next.Weight <= 0 {
+			next.Weight = 1
+		}
+		if next.Name == "" {
+			next.Name = fmt.Sprintf("upstream-%d", i+1)
+		}
+		if next.Enabled {
+			enabledCount++
+		}
+		out = append(out, next)
+	}
+	if enabledCount == 0 {
+		for i := range out {
+			out[i].Enabled = true
+		}
+	}
+	return out
+}
+
+func parseProxyUpstreamURL(field, raw string) (*url.URL, error) {
+	target, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%s parse error: %w", field, err)
+	}
+	if target.Scheme == "" || target.Host == "" {
+		return nil, fmt.Errorf("%s must include scheme and host", field)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(target.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return nil, fmt.Errorf("%s scheme must be http or https", field)
+	}
+	return target, nil
+}
+
+func proxyPrimaryTarget(cfg ProxyRulesConfig) (*url.URL, error) {
+	if len(cfg.Upstreams) == 0 {
+		cfg.UpstreamURL = strings.TrimSpace(cfg.UpstreamURL)
+		if cfg.UpstreamURL == "" {
+			return nil, fmt.Errorf("upstream_url is required")
+		}
+		target, err := parseProxyUpstreamURL("upstream_url", cfg.UpstreamURL)
+		if err != nil {
+			return nil, err
+		}
+		return target, nil
+	}
+	var firstEnabled *url.URL
+	for i, upstream := range cfg.Upstreams {
+		target, err := parseProxyUpstreamURL(fmt.Sprintf("upstreams[%d].url", i), upstream.URL)
+		if err != nil {
+			return nil, err
+		}
+		if upstream.Weight <= 0 {
+			return nil, fmt.Errorf("upstreams[%d].weight must be > 0", i)
+		}
+		if upstream.Enabled && firstEnabled == nil {
+			firstEnabled = target
+		}
+	}
+	if firstEnabled != nil {
+		return firstEnabled, nil
+	}
+	return nil, fmt.Errorf("at least one upstream must be enabled")
+}
+
+func proxyRulesHasHTTPSUpstream(cfg ProxyRulesConfig) bool {
+	if len(cfg.Upstreams) == 0 {
+		target, err := url.Parse(strings.TrimSpace(cfg.UpstreamURL))
+		return err == nil && strings.EqualFold(target.Scheme, "https")
+	}
+	for _, upstream := range cfg.Upstreams {
+		if !upstream.Enabled {
+			continue
+		}
+		target, err := url.Parse(strings.TrimSpace(upstream.URL))
+		if err == nil && strings.EqualFold(target.Scheme, "https") {
+			return true
+		}
+	}
+	return false
 }
 
 func persistProxyConfigRaw(path string, raw string) error {
@@ -683,7 +805,7 @@ func safeProxyValue(raw string) string {
 }
 
 func emitProxyConfigApplied(msg string, cfg ProxyRulesConfig) {
-	log.Printf("[PROXY][INFO] %s upstream=%s force_http2=%t disable_compression=%t expect_continue_timeout=%ds buffer_request_body=%t max_response_buffer_bytes=%d flush_interval_ms=%d health_check_path=%s health_check_interval_sec=%d health_check_timeout_sec=%d error_html_file=%s error_redirect_url=%s tls_insecure_skip_verify=%t mtls=%t", msg, cfg.UpstreamURL, cfg.ForceHTTP2, cfg.DisableCompression, cfg.ExpectContinueTimeout, cfg.BufferRequestBody, cfg.MaxResponseBufferBytes, cfg.FlushIntervalMS, cfg.HealthCheckPath, cfg.HealthCheckInterval, cfg.HealthCheckTimeout, safeProxyValue(cfg.ErrorHTMLFile), safeProxyValue(cfg.ErrorRedirectURL), cfg.TLSInsecureSkipVerify, cfg.TLSClientCert != "")
+	log.Printf("[PROXY][INFO] %s upstream=%s upstream_count=%d strategy=%s force_http2=%t disable_compression=%t expect_continue_timeout=%ds buffer_request_body=%t max_response_buffer_bytes=%d flush_interval_ms=%d health_check_path=%s health_check_interval_sec=%d health_check_timeout_sec=%d error_html_file=%s error_redirect_url=%s tls_insecure_skip_verify=%t mtls=%t", msg, proxyDisplayUpstream(cfg), len(proxyConfiguredUpstreams(cfg)), cfg.LoadBalancingStrategy, cfg.ForceHTTP2, cfg.DisableCompression, cfg.ExpectContinueTimeout, cfg.BufferRequestBody, cfg.MaxResponseBufferBytes, cfg.FlushIntervalMS, cfg.HealthCheckPath, cfg.HealthCheckInterval, cfg.HealthCheckTimeout, safeProxyValue(cfg.ErrorHTMLFile), safeProxyValue(cfg.ErrorRedirectURL), cfg.TLSInsecureSkipVerify, cfg.TLSClientCert != "")
 }
 
 func emitProxyTLSInsecureWarning(cfg ProxyRulesConfig) {
@@ -694,22 +816,64 @@ func emitProxyTLSInsecureWarning(cfg ProxyRulesConfig) {
 }
 
 type dynamicProxyTransport struct {
-	mu sync.RWMutex
-	rt http.RoundTripper
+	mu      sync.RWMutex
+	rt      http.RoundTripper
+	tracker *upstreamHealthMonitor
 }
 
-func newDynamicProxyTransport(cfg ProxyRulesConfig) (*dynamicProxyTransport, error) {
+func newDynamicProxyTransport(cfg ProxyRulesConfig, tracker *upstreamHealthMonitor) (*dynamicProxyTransport, error) {
 	if _, err := buildProxyTLSClientConfig(cfg); err != nil {
 		return nil, err
 	}
-	return &dynamicProxyTransport{rt: buildProxyTransport(cfg)}, nil
+	return &dynamicProxyTransport{rt: buildProxyTransport(cfg), tracker: tracker}, nil
 }
 
 func (d *dynamicProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	d.mu.RLock()
 	rt := d.rt
+	tracker := d.tracker
 	d.mu.RUnlock()
-	return rt.RoundTrip(req)
+	tracer := otel.Tracer("mamotama/upstream")
+	ctx, span := tracer.Start(
+		req.Context(),
+		"proxy.upstream",
+		oteltrace.WithSpanKind(oteltrace.SpanKindClient),
+		oteltrace.WithAttributes(
+			attribute.String("http.request.method", req.Method),
+			attribute.String("server.address", req.URL.Host),
+			attribute.String("url.full", req.URL.String()),
+		),
+	)
+	req = req.Clone(ctx)
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+	resp, err := rt.RoundTrip(req)
+	if tracker == nil {
+		endProxyTransportSpan(span, resp, err)
+		return resp, err
+	}
+	backendKey, _ := req.Context().Value(ctxKeySelectedUpstream).(string)
+	if backendKey == "" {
+		endProxyTransportSpan(span, resp, err)
+		return resp, err
+	}
+	if err != nil {
+		tracker.ReleaseTarget(backendKey)
+		endProxyTransportSpan(span, nil, err)
+		return nil, err
+	}
+	if resp == nil || resp.Body == nil {
+		tracker.ReleaseTarget(backendKey)
+		endProxyTransportSpan(span, resp, nil)
+		return resp, nil
+	}
+	resp.Body = &proxyTrackedReadCloser{
+		ReadCloser: resp.Body,
+		release: func() {
+			tracker.ReleaseTarget(backendKey)
+		},
+		span: span,
+	}
+	return resp, nil
 }
 
 func (d *dynamicProxyTransport) Update(cfg ProxyRulesConfig) error {
@@ -727,6 +891,52 @@ func (d *dynamicProxyTransport) Update(cfg ProxyRulesConfig) error {
 		tr.CloseIdleConnections()
 	}
 	return nil
+}
+
+type proxyTrackedReadCloser struct {
+	io.ReadCloser
+	once    sync.Once
+	release func()
+	span    oteltrace.Span
+}
+
+func (r *proxyTrackedReadCloser) Close() error {
+	if r == nil || r.ReadCloser == nil {
+		return nil
+	}
+	err := r.ReadCloser.Close()
+	r.once.Do(func() {
+		if r.release != nil {
+			r.release()
+		}
+		if r.span != nil {
+			r.span.End()
+		}
+	})
+	return err
+}
+
+func (r *proxyTrackedReadCloser) Write(p []byte) (int, error) {
+	if rw, ok := r.ReadCloser.(io.Writer); ok {
+		return rw.Write(p)
+	}
+	return 0, fmt.Errorf("response body does not support write")
+}
+
+func endProxyTransportSpan(span oteltrace.Span, resp *http.Response, err error) {
+	if span == nil {
+		return
+	}
+	if resp != nil {
+		span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
+	}
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+	span.End()
 }
 
 func buildProxyTransport(cfg ProxyRulesConfig) *http.Transport {
@@ -818,8 +1028,8 @@ func maybeBufferProxyResponseBody(res *http.Response) error {
 	return nil
 }
 
-func probeProxyUpstream(rawURL string, timeout time.Duration) (string, int64, error) {
-	cfg, target, _, err := normalizeAndValidateProxyRules(ProxyRulesConfig{UpstreamURL: rawURL})
+func probeProxyUpstream(in ProxyRulesConfig, timeout time.Duration) (string, int64, error) {
+	cfg, target, _, err := normalizeAndValidateProxyRules(in)
 	if err != nil {
 		return "", 0, err
 	}
@@ -835,6 +1045,38 @@ func probeProxyUpstream(rawURL string, timeout time.Duration) (string, int64, er
 	}
 	_ = conn.Close()
 	return address, time.Since(start).Milliseconds(), nil
+}
+
+func proxyConfiguredUpstreams(cfg ProxyRulesConfig) []ProxyUpstream {
+	if len(cfg.Upstreams) > 0 {
+		return cfg.Upstreams
+	}
+	if strings.TrimSpace(cfg.UpstreamURL) == "" {
+		return nil
+	}
+	return []ProxyUpstream{{
+		Name:    "primary",
+		URL:     cfg.UpstreamURL,
+		Weight:  1,
+		Enabled: true,
+	}}
+}
+
+func proxyDisplayUpstream(cfg ProxyRulesConfig) string {
+	if len(cfg.Upstreams) == 0 {
+		return safeProxyURL(cfg.UpstreamURL)
+	}
+	names := make([]string, 0, len(cfg.Upstreams))
+	for _, upstream := range cfg.Upstreams {
+		if !upstream.Enabled {
+			continue
+		}
+		names = append(names, upstream.URL)
+	}
+	if len(names) == 0 {
+		return "-"
+	}
+	return strings.Join(names, ",")
 }
 
 func proxyDialAddress(target *url.URL) (string, error) {
@@ -875,12 +1117,33 @@ func mustURL(raw string) *url.URL {
 }
 
 type upstreamHealthStatus struct {
+	Enabled             bool                    `json:"enabled"`
+	Status              string                  `json:"status"`
+	Strategy            string                  `json:"strategy,omitempty"`
+	Endpoint            string                  `json:"endpoint,omitempty"`
+	HealthCheckPath     string                  `json:"health_check_path"`
+	HealthCheckInterval int                     `json:"health_check_interval_sec"`
+	HealthCheckTimeout  int                     `json:"health_check_timeout_sec"`
+	CheckedAt           string                  `json:"checked_at,omitempty"`
+	LastSuccessAt       string                  `json:"last_success_at,omitempty"`
+	LastFailureAt       string                  `json:"last_failure_at,omitempty"`
+	ConsecutiveFailures int                     `json:"consecutive_failures"`
+	LastError           string                  `json:"last_error,omitempty"`
+	LastStatusCode      int                     `json:"last_status_code,omitempty"`
+	LastLatencyMS       int64                   `json:"last_latency_ms,omitempty"`
+	ActiveBackends      int                     `json:"active_backends"`
+	HealthyBackends     int                     `json:"healthy_backends"`
+	Backends            []upstreamBackendStatus `json:"backends,omitempty"`
+}
+
+type upstreamBackendStatus struct {
+	Key                 string `json:"key"`
+	Name                string `json:"name"`
+	URL                 string `json:"url"`
 	Enabled             bool   `json:"enabled"`
-	Status              string `json:"status"`
-	Endpoint            string `json:"endpoint"`
-	HealthCheckPath     string `json:"health_check_path"`
-	HealthCheckInterval int    `json:"health_check_interval_sec"`
-	HealthCheckTimeout  int    `json:"health_check_timeout_sec"`
+	Healthy             bool   `json:"healthy"`
+	InFlight            int    `json:"inflight"`
+	Endpoint            string `json:"endpoint,omitempty"`
 	CheckedAt           string `json:"checked_at,omitempty"`
 	LastSuccessAt       string `json:"last_success_at,omitempty"`
 	LastFailureAt       string `json:"last_failure_at,omitempty"`
@@ -890,20 +1153,48 @@ type upstreamHealthStatus struct {
 	LastLatencyMS       int64  `json:"last_latency_ms,omitempty"`
 }
 
+type proxyTargetSelection struct {
+	Key    string
+	Name   string
+	Target *url.URL
+}
+
+type proxyBackendState struct {
+	Key                 string
+	Name                string
+	URL                 string
+	Target              *url.URL
+	Weight              int
+	Enabled             bool
+	Healthy             bool
+	InFlight            int
+	Endpoint            string
+	CheckedAt           string
+	LastSuccessAt       string
+	LastFailureAt       string
+	ConsecutiveFailures int
+	LastError           string
+	LastStatusCode      int
+	LastLatencyMS       int64
+}
+
 type upstreamHealthMonitor struct {
-	mu      sync.RWMutex
-	cfg     ProxyRulesConfig
-	status  upstreamHealthStatus
-	wakeCh  chan struct{}
-	running bool
+	mu       sync.RWMutex
+	cfg      ProxyRulesConfig
+	status   upstreamHealthStatus
+	backends []*proxyBackendState
+	wakeCh   chan struct{}
+	running  bool
+	rrCursor uint64
 }
 
 func newUpstreamHealthMonitor(initial ProxyRulesConfig) *upstreamHealthMonitor {
 	cfg := normalizeProxyRulesConfig(initial)
 	m := &upstreamHealthMonitor{
-		cfg:    cfg,
-		wakeCh: make(chan struct{}, 1),
-		status: upstreamHealthStatus{Status: "disabled"},
+		cfg:      cfg,
+		wakeCh:   make(chan struct{}, 1),
+		status:   upstreamHealthStatus{Status: "disabled"},
+		backends: buildProxyBackendStates(cfg, nil),
 	}
 	m.applyConfigLocked(cfg)
 	if m.status.Enabled {
@@ -919,7 +1210,13 @@ func (m *upstreamHealthMonitor) Snapshot() upstreamHealthStatus {
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.status
+	snapshot := m.status
+	if len(snapshot.Backends) > 0 {
+		cp := make([]upstreamBackendStatus, len(snapshot.Backends))
+		copy(cp, snapshot.Backends)
+		snapshot.Backends = cp
+	}
+	return snapshot
 }
 
 func (m *upstreamHealthMonitor) Update(next ProxyRulesConfig) {
@@ -929,6 +1226,7 @@ func (m *upstreamHealthMonitor) Update(next ProxyRulesConfig) {
 	next = normalizeProxyRulesConfig(next)
 	m.mu.Lock()
 	m.cfg = next
+	m.backends = buildProxyBackendStates(next, m.backends)
 	m.applyConfigLocked(next)
 	shouldStart := !m.running && m.status.Enabled
 	if shouldStart {
@@ -941,6 +1239,44 @@ func (m *upstreamHealthMonitor) Update(next ProxyRulesConfig) {
 	m.triggerWake()
 }
 
+func (m *upstreamHealthMonitor) SelectTarget() (proxyTargetSelection, bool) {
+	if m == nil {
+		return proxyTargetSelection{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx, ok := m.selectBackendIndexLocked()
+	if !ok {
+		return proxyTargetSelection{}, false
+	}
+	backend := m.backends[idx]
+	backend.InFlight++
+	m.refreshStatusLocked()
+	return proxyTargetSelection{
+		Key:    backend.Key,
+		Name:   backend.Name,
+		Target: cloneURL(backend.Target),
+	}, true
+}
+
+func (m *upstreamHealthMonitor) ReleaseTarget(key string) {
+	if m == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, backend := range m.backends {
+		if backend.Key != key {
+			continue
+		}
+		if backend.InFlight > 0 {
+			backend.InFlight--
+		}
+		break
+	}
+	m.refreshStatusLocked()
+}
+
 func (m *upstreamHealthMonitor) run() {
 	for {
 		cfg := m.currentConfig()
@@ -948,9 +1284,15 @@ func (m *upstreamHealthMonitor) run() {
 			m.awaitWake()
 			continue
 		}
-		checkedAt := time.Now().UTC()
-		statusCode, latencyMS, err := checkProxyUpstreamHealth(cfg)
-		m.recordResult(checkedAt, statusCode, latencyMS, err)
+		backends := m.backendsSnapshot()
+		for _, backend := range backends {
+			if backend == nil || !backend.Enabled {
+				continue
+			}
+			checkedAt := time.Now().UTC()
+			statusCode, latencyMS, err := checkProxyBackendHealth(cfg, backend.Target)
+			m.recordResult(backend.Key, checkedAt, statusCode, latencyMS, err)
+		}
 		m.waitOrWake(proxyHealthCheckInterval(cfg))
 	}
 }
@@ -963,9 +1305,13 @@ func (m *upstreamHealthMonitor) currentConfig() ProxyRulesConfig {
 
 func (m *upstreamHealthMonitor) applyConfigLocked(cfg ProxyRulesConfig) {
 	enabled := proxyHealthCheckEnabled(cfg)
-	endpoint, _ := proxyHealthEndpoint(cfg)
+	endpoint := ""
+	if len(m.backends) > 0 {
+		endpoint = m.backends[0].Endpoint
+	}
 
 	m.status.Enabled = enabled
+	m.status.Strategy = cfg.LoadBalancingStrategy
 	m.status.HealthCheckPath = cfg.HealthCheckPath
 	m.status.HealthCheckInterval = cfg.HealthCheckInterval
 	m.status.HealthCheckTimeout = cfg.HealthCheckTimeout
@@ -976,30 +1322,179 @@ func (m *upstreamHealthMonitor) applyConfigLocked(cfg ProxyRulesConfig) {
 		m.status.LastError = ""
 		m.status.LastStatusCode = 0
 		m.status.LastLatencyMS = 0
+		m.refreshStatusLocked()
 		return
 	}
-	if m.status.Status == "" || m.status.Status == "disabled" {
-		m.status.Status = "unknown"
+	m.refreshStatusLocked()
+}
+
+func (m *upstreamHealthMonitor) recordResult(key string, checkedAt time.Time, statusCode int, latencyMS int64, err error) {
+	m.mu.Lock()
+	for _, backend := range m.backends {
+		if backend.Key != key {
+			continue
+		}
+		backend.CheckedAt = checkedAt.Format(time.RFC3339Nano)
+		backend.LastStatusCode = statusCode
+		backend.LastLatencyMS = latencyMS
+		if err == nil {
+			backend.Healthy = true
+			backend.LastSuccessAt = backend.CheckedAt
+			backend.ConsecutiveFailures = 0
+			backend.LastError = ""
+		} else {
+			backend.Healthy = false
+			backend.LastFailureAt = backend.CheckedAt
+			backend.ConsecutiveFailures++
+			backend.LastError = err.Error()
+		}
+		break
+	}
+	m.refreshStatusLocked()
+	m.mu.Unlock()
+}
+
+func (m *upstreamHealthMonitor) backendsSnapshot() []*proxyBackendState {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*proxyBackendState, 0, len(m.backends))
+	for _, backend := range m.backends {
+		if backend == nil {
+			continue
+		}
+		cp := *backend
+		cp.Target = cloneURL(backend.Target)
+		out = append(out, &cp)
+	}
+	return out
+}
+
+func (m *upstreamHealthMonitor) selectBackendIndexLocked() (int, bool) {
+	if len(m.backends) == 0 {
+		return -1, false
+	}
+	candidates := make([]int, 0, len(m.backends))
+	healthyCandidates := make([]int, 0, len(m.backends))
+	for i, backend := range m.backends {
+		if backend == nil || !backend.Enabled {
+			continue
+		}
+		candidates = append(candidates, i)
+		if !m.status.Enabled || backend.Healthy {
+			healthyCandidates = append(healthyCandidates, i)
+		}
+	}
+	if len(candidates) == 0 {
+		return -1, false
+	}
+	if len(healthyCandidates) > 0 {
+		candidates = healthyCandidates
+	}
+	switch m.cfg.LoadBalancingStrategy {
+	case "least_conn":
+		best := candidates[0]
+		for _, idx := range candidates[1:] {
+			if proxyBackendLessLoaded(m.backends[idx], m.backends[best]) {
+				best = idx
+			}
+		}
+		return best, true
+	default:
+		totalWeight := 0
+		for _, idx := range candidates {
+			totalWeight += m.backends[idx].Weight
+		}
+		if totalWeight <= 0 {
+			return candidates[0], true
+		}
+		selected := int(m.rrCursor % uint64(totalWeight))
+		m.rrCursor++
+		acc := 0
+		for _, idx := range candidates {
+			acc += m.backends[idx].Weight
+			if selected < acc {
+				return idx, true
+			}
+		}
+		return candidates[0], true
 	}
 }
 
-func (m *upstreamHealthMonitor) recordResult(checkedAt time.Time, statusCode int, latencyMS int64, err error) {
-	m.mu.Lock()
-	m.status.CheckedAt = checkedAt.Format(time.RFC3339Nano)
-	m.status.LastStatusCode = statusCode
-	m.status.LastLatencyMS = latencyMS
-	if err == nil {
-		m.status.Status = "healthy"
-		m.status.LastSuccessAt = m.status.CheckedAt
-		m.status.ConsecutiveFailures = 0
-		m.status.LastError = ""
-	} else {
-		m.status.Status = "unhealthy"
-		m.status.LastFailureAt = m.status.CheckedAt
-		m.status.ConsecutiveFailures++
-		m.status.LastError = err.Error()
+func (m *upstreamHealthMonitor) refreshStatusLocked() {
+	backends := make([]upstreamBackendStatus, 0, len(m.backends))
+	activeCount := 0
+	healthyCount := 0
+	var aggregate upstreamBackendStatus
+	var aggregateSet bool
+
+	for _, backend := range m.backends {
+		if backend == nil {
+			continue
+		}
+		if backend.Enabled {
+			activeCount++
+		}
+		if backend.Enabled && backend.Healthy {
+			healthyCount++
+		}
+		entry := upstreamBackendStatus{
+			Key:                 backend.Key,
+			Name:                backend.Name,
+			URL:                 backend.URL,
+			Enabled:             backend.Enabled,
+			Healthy:             backend.Healthy,
+			InFlight:            backend.InFlight,
+			Endpoint:            backend.Endpoint,
+			CheckedAt:           backend.CheckedAt,
+			LastSuccessAt:       backend.LastSuccessAt,
+			LastFailureAt:       backend.LastFailureAt,
+			ConsecutiveFailures: backend.ConsecutiveFailures,
+			LastError:           backend.LastError,
+			LastStatusCode:      backend.LastStatusCode,
+			LastLatencyMS:       backend.LastLatencyMS,
+		}
+		backends = append(backends, entry)
+		if !aggregateSet && backend.Enabled {
+			aggregate = entry
+			aggregateSet = true
+		}
 	}
-	m.mu.Unlock()
+
+	m.status.Backends = backends
+	m.status.ActiveBackends = activeCount
+	m.status.HealthyBackends = healthyCount
+	m.status.Endpoint = aggregate.Endpoint
+	m.status.CheckedAt = aggregate.CheckedAt
+	m.status.LastSuccessAt = aggregate.LastSuccessAt
+	m.status.LastFailureAt = aggregate.LastFailureAt
+	m.status.ConsecutiveFailures = aggregate.ConsecutiveFailures
+	m.status.LastError = aggregate.LastError
+	m.status.LastStatusCode = aggregate.LastStatusCode
+	m.status.LastLatencyMS = aggregate.LastLatencyMS
+
+	switch {
+	case !m.status.Enabled:
+		m.status.Status = "disabled"
+	case healthyCount > 0 && healthyCount == activeCount:
+		m.status.Status = "healthy"
+	case healthyCount > 0:
+		m.status.Status = "degraded"
+	case activeCount > 0:
+		checked := false
+		for _, backend := range backends {
+			if backend.CheckedAt != "" {
+				checked = true
+				break
+			}
+		}
+		if checked {
+			m.status.Status = "unhealthy"
+		} else {
+			m.status.Status = "unknown"
+		}
+	default:
+		m.status.Status = "unknown"
+	}
 }
 
 func (m *upstreamHealthMonitor) triggerWake() {
@@ -1051,13 +1546,9 @@ func proxyHealthCheckTimeout(cfg ProxyRulesConfig) time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
-func proxyHealthEndpoint(cfg ProxyRulesConfig) (string, error) {
-	target, err := url.Parse(strings.TrimSpace(cfg.UpstreamURL))
-	if err != nil {
-		return "", err
-	}
-	if target.Scheme == "" || target.Host == "" {
-		return "", fmt.Errorf("upstream_url must include scheme and host")
+func proxyHealthEndpoint(cfg ProxyRulesConfig, target *url.URL) (string, error) {
+	if target == nil {
+		return "", fmt.Errorf("upstream target is required")
 	}
 	endpoint := *target
 	endpoint.Path = cfg.HealthCheckPath
@@ -1067,8 +1558,8 @@ func proxyHealthEndpoint(cfg ProxyRulesConfig) (string, error) {
 	return endpoint.String(), nil
 }
 
-func checkProxyUpstreamHealth(cfg ProxyRulesConfig) (statusCode int, latencyMS int64, err error) {
-	endpoint, err := proxyHealthEndpoint(cfg)
+func checkProxyBackendHealth(cfg ProxyRulesConfig, target *url.URL) (statusCode int, latencyMS int64, err error) {
+	endpoint, err := proxyHealthEndpoint(cfg, target)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -1096,6 +1587,79 @@ func checkProxyUpstreamHealth(cfg ProxyRulesConfig) (statusCode int, latencyMS i
 		return resp.StatusCode, latency, nil
 	}
 	return resp.StatusCode, latency, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+}
+
+func buildProxyBackendStates(cfg ProxyRulesConfig, prev []*proxyBackendState) []*proxyBackendState {
+	prevMap := make(map[string]*proxyBackendState, len(prev))
+	for _, backend := range prev {
+		if backend == nil {
+			continue
+		}
+		prevMap[backend.Key] = backend
+	}
+
+	defs := cfg.Upstreams
+	if len(defs) == 0 {
+		defs = []ProxyUpstream{{Name: "primary", URL: cfg.UpstreamURL, Weight: 1, Enabled: true}}
+	}
+	out := make([]*proxyBackendState, 0, len(defs))
+	for i, upstream := range defs {
+		target, err := parseProxyUpstreamURL(fmt.Sprintf("upstreams[%d].url", i), upstream.URL)
+		if err != nil {
+			continue
+		}
+		key := fmt.Sprintf("%s|%s", upstream.Name, target.String())
+		state := &proxyBackendState{
+			Key:     key,
+			Name:    upstream.Name,
+			URL:     target.String(),
+			Target:  target,
+			Weight:  upstream.Weight,
+			Enabled: upstream.Enabled,
+		}
+		if state.Weight <= 0 {
+			state.Weight = 1
+		}
+		if prevState, ok := prevMap[key]; ok {
+			state.Healthy = prevState.Healthy
+			state.InFlight = prevState.InFlight
+			state.CheckedAt = prevState.CheckedAt
+			state.LastSuccessAt = prevState.LastSuccessAt
+			state.LastFailureAt = prevState.LastFailureAt
+			state.ConsecutiveFailures = prevState.ConsecutiveFailures
+			state.LastError = prevState.LastError
+			state.LastStatusCode = prevState.LastStatusCode
+			state.LastLatencyMS = prevState.LastLatencyMS
+		}
+		if endpoint, err := proxyHealthEndpoint(cfg, target); err == nil {
+			state.Endpoint = endpoint
+		}
+		out = append(out, state)
+	}
+	return out
+}
+
+func proxyBackendLessLoaded(a, b *proxyBackendState) bool {
+	if a == nil {
+		return false
+	}
+	if b == nil {
+		return true
+	}
+	left := int64(a.InFlight) * int64(b.Weight)
+	right := int64(b.InFlight) * int64(a.Weight)
+	if left == right {
+		return a.Name < b.Name
+	}
+	return left < right
+}
+
+func cloneURL(in *url.URL) *url.URL {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }
 
 func asProxyRulesConflict(err error, target *proxyRulesConflictError) bool {

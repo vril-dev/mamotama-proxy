@@ -97,8 +97,10 @@ Container startup uses only:
 ```
 
 - `server.tls.enabled=false` is the default.
-- Initial scope is manual certificate files only (`cert_file` / `key_file`). ACME auto-issuance is not included.
+- Manual certificate files (`cert_file` / `key_file`) remain supported.
+- ACME can be enabled with `server.tls.acme.enabled=true` plus `server.tls.acme.email`, `server.tls.acme.domains`, `server.tls.acme.cache_dir`, and optional `server.tls.acme.staging=true`.
 - `server.tls.redirect_http=true` starts a second plain HTTP listener that permanently redirects to HTTPS.
+- When ACME and `server.tls.redirect_http=true` are both enabled, the plain HTTP listener serves `/.well-known/acme-challenge/` and redirects all other traffic to HTTPS.
 - `server.tls.http_redirect_addr` must be different from `server.listen_addr`.
 
 ### Admin UI
@@ -486,6 +488,9 @@ This keeps external provider payload small by sending one selected event at a ti
 | POST | `/mamotama-api/notifications/validate` | Validate notification config (no save) |
 | POST | `/mamotama-api/notifications/test` | Send a test notification using current runtime config |
 | PUT | `/mamotama-api/notifications` | Save notification config (`If-Match` optimistic lock via `ETag`) |
+| GET | `/mamotama-api/ip-reputation` | Get IP reputation config and runtime status |
+| POST | `/mamotama-api/ip-reputation:validate` | Validate IP reputation config (no save) |
+| PUT | `/mamotama-api/ip-reputation` | Save IP reputation config (`If-Match` optimistic lock via `ETag`) |
 | GET | `/mamotama-api/bot-defense-rules` | Get bot-defense config file |
 | POST | `/mamotama-api/bot-defense-rules:validate` | Validate bot-defense config (no save) |
 | PUT | `/mamotama-api/bot-defense-rules` | Save bot-defense config (`If-Match` optimistic lock via `ETag`) |
@@ -502,11 +507,26 @@ If logs or rules are missing, API returns `500` with `{"error":"..."}`.
 
 `GET /mamotama-api/status` also includes built-in listener TLS fields:
 - `server_tls_enabled`
+- `server_tls_source`
 - `server_tls_cert_file`
 - `server_tls_key_configured`
 - `server_tls_min_version`
 - `server_tls_redirect_http`
 - `server_tls_http_redirect_addr`
+- `server_tls_cert_not_after`
+- `server_tls_last_error`
+- `server_tls_acme_enabled`
+- `server_tls_acme_domains`
+- `server_tls_acme_staging`
+- `server_tls_acme_success_total`
+- `server_tls_acme_failure_total`
+
+`GET /mamotama-api/status` also includes proxy HA/runtime fields:
+- `proxy_upstreams`
+- `proxy_load_balancing_strategy`
+- `upstream_health_strategy`
+- `upstream_health_active_backends`
+- `upstream_health_healthy_backends`
 
 ---
 
@@ -598,7 +618,40 @@ Oversized JWT header/cookie values are ignored for `jwt_sub` extraction and are 
 
 - Watch `/mamotama-api/metrics` for sustained increases in rate-limit blocked and adaptive counters
 - Watch `/mamotama-api/metrics` for semantic action counters around login and write endpoints
+- Watch `/mamotama-api/metrics` for `mamotama_server_tls_cert_not_after_unix`, `mamotama_server_tls_acme_failure_total`, and upstream healthy-backend gauges
 - Inspect logs for `rl_key_hash`, `adaptive`, `risk_score`, `reason_list`, and `score_breakdown` when tuning false positives or throttling
+
+### IP Reputation
+
+You can edit `paths.ip_reputation_file` (default: `conf/ip-reputation.conf`) from `/ip-reputation`.
+Evaluation happens before bot defense, semantic scoring, and WAF, and emits `ip_reputation` events plus notification-source state transitions.
+
+- `feed_urls` accepts local files (`/path/to/feed.txt` or `file:///...`) and HTTP/HTTPS URLs
+- `allowlist` and `blocklist` accept both IPv4 and IPv6 CIDRs
+- `fail_open=true` keeps traffic flowing when every remote feed refresh fails
+- watch `last_refresh_at`, `last_refresh_error`, `effective_allow_count`, and `effective_block_count` in `/mamotama-api/status`
+
+### WebSocket Scope
+
+- the HTTP upgrade handshake is still inspected like normal request traffic
+- upgraded WebSocket frames are pass-through and are not WAF/body-inspected
+- response buffering and HTML maintenance pages do not apply to upgraded bidirectional streams
+
+### Admin Surface Hardening
+
+- `admin.external_mode` controls external reachability: `deny_external`, `api_only_external`, `full_external`
+- `admin.trusted_cidrs` can include IPv4 and IPv6 CIDRs such as `127.0.0.1/32` and `::1/128`
+- `admin.trust_forwarded_for=true` is only honored when the direct peer is already inside `admin.trusted_cidrs`
+- `admin.rate_limit` applies dedicated throttling to admin API and UI traffic; keep it off until the reverse-proxy path is understood
+
+### Observability
+
+- `/mamotama-api/metrics` now exposes TLS and upstream HA gauges in addition to rate-limit / semantic / notification counters
+- file backend rotation for `waf-events.ndjson` is controlled by `storage.file_rotate_bytes`, `storage.file_max_bytes`, and `storage.file_retention_days`
+- optional OTLP tracing is available under `observability.tracing`
+- sample assets:
+  - [docs/operations/prometheus-scrape.example.yml](docs/operations/prometheus-scrape.example.yml)
+  - [docs/operations/grafana-dashboard.json](docs/operations/grafana-dashboard.json)
 
 ### Notifications
 
