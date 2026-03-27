@@ -810,6 +810,38 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 - `fail_open=true` の場合、全 remote feed refresh が失敗しても通信は継続します
 - `/mamotama-api/status` の `last_refresh_at`, `last_refresh_error`, `effective_allow_count`, `effective_block_count` を監視してください
 
+#### Feedファイル形式
+
+feed file（local / remote）は plain-text 形式です:
+
+```text
+# `#` で始まる行は comment として無視されます
+1.2.3.0/24
+2001:db8::/32
+10.0.0.1
+```
+
+- 1 行につき 1 エントリで、IPv4 address、IPv4 CIDR、IPv6 address、IPv6 CIDR のいずれかを記述します
+- `#` で始まる行は comment として扱われます
+- 空行は無視されます
+- 有効な IP / CIDR として parse できない行は warning log を出して skip され、feed load 全体は中断しません
+- feed エントリは load 時に inline の `blocklist` / `allowlist` とマージされます。inline の `allowlist` は feed 由来の block エントリより常に優先されます
+
+例 `conf/ip-reputation.conf`:
+```json
+{
+  "enabled": true,
+  "fail_open": true,
+  "refresh_interval_seconds": 3600,
+  "feed_urls": [
+    "file:///etc/mamotama/feeds/custom-blocklist.txt",
+    "https://example.invalid/feeds/threat-intel.txt"
+  ],
+  "allowlist": ["203.0.113.0/24"],
+  "blocklist": ["198.51.100.42"]
+}
+```
+
 ### WebSocket の検査範囲
 
 - HTTP upgrade handshake は通常の request と同様に検査されます
@@ -823,11 +855,62 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 - `admin.trust_forwarded_for=true` は、直前 peer がすでに `admin.trusted_cidrs` 内にいる場合だけ有効です
 - `admin.rate_limit` で管理 API / UI 専用の throttling を設定できます。reverse-proxy 経路が把握できるまでは既定の disabled のままが無難です
 
+#### `admin.rate_limit` JSONパラメータ早見表
+
+| パラメータ | 例 | 影響 |
+| --- | --- | --- |
+| `enabled` | `true` / `false` | 管理面の rate limit を有効/無効化します。既定は `false`。 |
+| `limit` | `60` | 1 ウィンドウあたりの最大 request 数です。 |
+| `burst` | `10` | `limit` を超えて許容する burst 分です。 |
+| `window_seconds` | `60` | sliding window の秒数です。 |
+| `status` | `429` | 制限超過時に返す HTTP status です。 |
+
+例:
+```json
+"admin": {
+  "rate_limit": {
+    "enabled": true,
+    "limit": 60,
+    "burst": 10,
+    "window_seconds": 60,
+    "status": 429
+  }
+}
+```
+
+- key は常に direct connection の source IP です。`admin.trust_forwarded_for=true` かつ peer が `admin.trusted_cidrs` 内にいる場合だけ、`X-Forwarded-For` の先頭値を使います
+- reverse-proxy の転送経路を確認できるまでは `enabled=false` から始め、確認後に `limit` を上げてください。経路が不明なまま低く設定すると admin UI を自分で締め出します
+
 ### Observability
 
 - `/mamotama-api/metrics` は rate-limit / semantic / notification に加えて TLS と upstream HA gauge も返します
 - file backend の `waf-events.ndjson` rotation は `storage.file_rotate_bytes`, `storage.file_max_bytes`, `storage.file_retention_days` で制御できます
 - `observability.tracing` で OTLP tracing を有効化できます
+
+#### OTLP Tracing 設定
+
+```json
+"observability": {
+  "tracing": {
+    "enabled": true,
+    "endpoint": "http://jaeger:4318/v1/traces",
+    "service_name": "mamotama",
+    "sampling_ratio": 0.1,
+    "timeout_seconds": 5
+  }
+}
+```
+
+| 項目 | 例 | 影響 |
+| --- | --- | --- |
+| `enabled` | `true` / `false` | OTLP span export の有効/無効を切り替えます。既定は `false`。 |
+| `endpoint` | `"http://jaeger:4318/v1/traces"` | OTLP HTTP exporter の endpoint です。gRPC の場合は port `4317` を使います。 |
+| `service_name` | `"mamotama"` | 全 span に付与する service name です。 |
+| `sampling_ratio` | `0.1` | trace を sampling する割合です（`0.0`–`1.0`）。debug では `1.0`、production では `0.01`–`0.1` を目安にします。 |
+| `timeout_seconds` | `5` | batch ごとの export timeout です。 |
+
+対応 backend: Jaeger（v1.35+）、Grafana Tempo、OpenTelemetry Collector。
+既定では OTLP HTTP exporter を使います。`endpoint` には collector または backend の ingest URL を指定してください。
 - sample asset:
   - [docs/operations/prometheus-scrape.example.yml](docs/operations/prometheus-scrape.example.yml)
   - [docs/operations/grafana-dashboard.json](docs/operations/grafana-dashboard.json)
