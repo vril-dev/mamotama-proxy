@@ -171,13 +171,87 @@ You can still edit source under `web/mamotama-admin/` and rebuild assets for emb
 | `/bot-defense` | View/edit bot-defense config directly (`bot-defense.conf`) |
 | `/semantic` | View/edit semantic security config directly (`semantic.conf`) |
 | `/cache-rules` | Visual + raw editing for cache rules (`cache.conf`), with Validate/Save |
-| `/proxy-rules` | View/validate/probe/update/rollback upstream + transport + maintenance/redirect fallback tuning (`conf/proxy.json`) |
+| `/proxy-rules` | View/validate/probe/dry-run/update/rollback upstream + transport + route + maintenance/redirect fallback tuning (`conf/proxy.json`) |
 
 Upstream failure response behavior:
 - If `error_html_file` and `error_redirect_url` are both unset, the proxy returns the default `502 Bad Gateway` response and the browser shows a simple built-in error page.
 - If `error_html_file` is set, HTML-capable clients receive that maintenance page and other clients receive plain text `503 Service Unavailable`.
 - If `error_redirect_url` is set, `GET` / `HEAD` requests are redirected there and other methods receive plain text `503 Service Unavailable`.
 - `error_html_file` and `error_redirect_url` are mutually exclusive; choose one per protected application.
+
+Phase-1 routing in `conf/proxy.json`:
+- `routes[]` are evaluated in ascending `priority` order with first-match semantics.
+- Matching supports exact host, `*.example.com` wildcard host, exact path, and segment-safe prefix path.
+- `action.upstream` can point to a configured `upstreams[].name` or an absolute `http(s)` URL. If omitted, the route uses the legacy global upstream selection.
+- `action.path_rewrite.prefix` rewrites only the matched path prefix. Host rewrite, query rewrite, response header rewrite, regex path, weighted/canary/mirror routing are intentionally out of scope for phase 1.
+- `action.request_headers` supports outbound request-header `set`, `add`, and `remove`. `Host`, `X-Forwarded-*`, and hop-by-hop headers are rejected.
+- If no route matches, `default_route` is used. If `default_route` is unset, the proxy falls back to legacy `upstream_url` / `upstreams[]`.
+
+Route-related logs include:
+- `proxy_route`
+- `original_host`, `original_path`
+- `rewritten_host`, `rewritten_path`
+- `selected_route`, `selected_upstream`, `selected_upstream_url`
+
+Legacy config (still valid):
+
+```json
+{
+  "upstream_url": "http://app.internal:8080",
+  "upstreams": [],
+  "load_balancing_strategy": "round_robin"
+}
+```
+
+Phase-1 route config example:
+
+```json
+{
+  "upstream_url": "http://app.internal:8080",
+  "upstreams": [
+    { "name": "service-a", "url": "http://sv3.internal:8080", "weight": 1, "enabled": true },
+    { "name": "service-b", "url": "http://sv4.internal:8080", "weight": 1, "enabled": true }
+  ],
+  "routes": [
+    {
+      "name": "service-a-prefix",
+      "enabled": true,
+      "priority": 10,
+      "match": {
+        "hosts": ["api.example.com", "*.example.net"],
+        "path": { "type": "prefix", "value": "/servicea/" }
+      },
+      "action": {
+        "upstream": "service-a",
+        "path_rewrite": { "prefix": "/service-a/" },
+        "request_headers": {
+          "set": { "X-Service": "service-a" },
+          "add": { "X-Route": "service-a-prefix" },
+          "remove": ["X-Debug"]
+        }
+      }
+    }
+  ],
+  "default_route": {
+    "name": "fallback",
+    "enabled": true,
+    "action": {
+      "upstream": "http://fallback.internal:8080"
+    }
+  }
+}
+```
+
+Dry-run example:
+
+```bash
+curl -sS \
+  -H "X-API-Key: ${WAF_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  --data '{"host":"api.example.com","path":"/servicea/users"}' \
+  http://127.0.0.1:8080/mamotama-api/proxy-rules:dry-run
+```
 
 ### Screenshots
 
@@ -506,6 +580,12 @@ This keeps external provider payload small by sending one selected event at a ti
 | GET | `/mamotama-api/cache-rules` | Return `cache.conf` raw + structured data with `ETag` |
 | POST | `/mamotama-api/cache-rules:validate` | Validate cache config (no save) |
 | PUT | `/mamotama-api/cache-rules` | Save `cache.conf` (`If-Match` optimistic lock via `ETag`) |
+| GET | `/mamotama-api/proxy-rules` | Get current proxy transport + route config (`conf/proxy.json`) |
+| POST | `/mamotama-api/proxy-rules:validate` | Validate proxy transport + route config (no save) |
+| POST | `/mamotama-api/proxy-rules:probe` | TCP probe the current primary/fallback upstream target |
+| POST | `/mamotama-api/proxy-rules:dry-run` | Resolve `{host,path}` to the selected route and final upstream URL without sending traffic |
+| POST | `/mamotama-api/proxy-rules:rollback` | Roll back `conf/proxy.json` to the previous saved snapshot |
+| PUT | `/mamotama-api/proxy-rules` | Save `conf/proxy.json` (`If-Match` optimistic lock via `ETag`) |
 
 If logs or rules are missing, API returns `500` with `{"error":"..."}`.
 
@@ -891,7 +971,7 @@ GitHub Actions workflow `ci` validates:
 - `go test ./...` (`coraza/src`)
 - `docker compose config` sanity check
 - MySQL log-store integration test (`go test ./internal/handler -run TestLogsStatsMySQLStoreAggregatesAndIngestsIncrementally`, with `docker compose --profile mysql up -d mysql`)
-- Proxy admin smoke (`./scripts/ci_proxy_admin_smoke.sh`: embedded UI + `proxy-rules` validate/probe/PUT/rollback + ETag conflict)
+- Proxy admin smoke (`./scripts/ci_proxy_admin_smoke.sh`: embedded UI + `proxy-rules` validate/probe/dry-run/PUT/rollback + ETag conflict)
 - `./scripts/run_gotestwaf.sh` (`waf-test` matrix, `MIN_BLOCKED_RATIO=70`, with both `storage.backend=file` and `storage.backend=db`)
 
 In production workflows, set these as required branch protection checks:
