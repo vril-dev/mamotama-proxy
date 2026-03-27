@@ -179,7 +179,7 @@ Upstream failure response behavior:
 - If `error_redirect_url` is set, `GET` / `HEAD` requests are redirected there and other methods receive plain text `503 Service Unavailable`.
 - `error_html_file` and `error_redirect_url` are mutually exclusive; choose one per protected application.
 
-Phase-1 routing in `conf/proxy.json`:
+Phase-1/2.1 routing in `conf/proxy.json`:
 - `routes[]` are evaluated in ascending `priority` order with first-match semantics.
 - Route selection order is fixed: matching `routes[]` first, then `default_route`, then legacy `upstream_url` / `upstreams[]`.
 - Host matching supports exact host and `*.example.com` wildcard host. Matching is case-insensitive, strips the request port, trims a trailing dot, and wildcard patterns match subdomains only (`example.com` itself does not match `*.example.com`).
@@ -187,8 +187,10 @@ Phase-1 routing in `conf/proxy.json`:
 - `action.upstream` can point to a configured `upstreams[].name` or an absolute `http(s)` URL. If omitted, the route uses the legacy global upstream selection. When `upstream_url` / `upstreams[]` are not set, each enabled route and `default_route` must declare `action.upstream`.
 - `action.path_rewrite.prefix` rewrites only the matched path prefix. It is intended to cover `/servicea/... -> /...`, `/servicea/... -> /servicea/...`, and `/servicea/... -> /service-a/...`. The proxy preserves escaped suffixes such as `%2F` when forwarding, and it does not apply extra path cleaning.
 - `action.request_headers` supports outbound request-header `remove`, `set`, then `add`. `Host`, `X-Forwarded-*`, and hop-by-hop headers are rejected for all three operations.
+- `action.response_headers` supports upstream response-header `remove`, `set`, then `add`. `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `Trailer`, `Keep-Alive`, `TE`, `Proxy-Connection`, and `Set-Cookie` are rejected.
 - `POST /mamotama-api/proxy-rules:dry-run` uses the same route selection, upstream resolution, and path rewrite logic as runtime proxying. When you validate unsaved raw config, dry-run cannot reuse the current runtime health state, so global upstream fallback reflects the provided config rather than live backend health.
 - If no route matches, `default_route` is used. If `default_route` is unset, the proxy falls back to legacy `upstream_url` / `upstreams[]`.
+- Still out of scope after phase 2.1: regex path match, host rewrite, response body rewrite, weighted/canary/mirror routing, query rewrite.
 
 Route-related logs include:
 - `proxy_route`
@@ -206,7 +208,7 @@ Legacy config (still valid):
 }
 ```
 
-Phase-1 route config example:
+Phase-1/2.1 route config example:
 
 ```json
 {
@@ -231,6 +233,11 @@ Phase-1 route config example:
           "set": { "X-Service": "service-a" },
           "add": { "X-Route": "service-a-prefix" },
           "remove": ["X-Debug"]
+        },
+        "response_headers": {
+          "set": { "X-Route-Response": "service-a-prefix" },
+          "add": { "Cache-Control": "no-store" },
+          "remove": ["X-Powered-By"]
         }
       }
     }

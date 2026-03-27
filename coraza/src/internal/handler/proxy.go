@@ -38,7 +38,19 @@ func onProxyResponse(res *http.Response) error {
 	}
 	annotateWAFHit(res)
 	applyCacheHeaders(res)
+	applyRouteResponseHeaders(res)
 	return nil
+}
+
+func applyRouteResponseHeaders(res *http.Response) {
+	if res == nil || res.Request == nil {
+		return
+	}
+	decision, ok := proxyRouteDecisionFromContext(res.Request.Context())
+	if !ok {
+		return
+	}
+	applyProxyRouteHeaders(res.Header, decision.ResponseHeaderOps)
 }
 
 func annotateWAFHit(res *http.Response) {

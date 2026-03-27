@@ -53,6 +53,10 @@ func TestValidateProxyRulesRawWithRoutes(t *testing.T) {
           "set": { "X-Service": "service-a" },
           "add": { "X-Route": "service-a" },
           "remove": ["X-Debug"]
+        },
+        "response_headers": {
+          "set": { "x-frame-options": "DENY" },
+          "remove": ["x-powered-by"]
         }
       }
     }
@@ -77,6 +81,9 @@ func TestValidateProxyRulesRawWithRoutes(t *testing.T) {
 	}
 	if cfg.Routes[0].Action.PathRewrite == nil || cfg.Routes[0].Action.PathRewrite.Prefix != "/service-a" {
 		t.Fatalf("unexpected normalized path rewrite: %#v", cfg.Routes[0].Action.PathRewrite)
+	}
+	if cfg.Routes[0].Action.ResponseHeaders == nil || cfg.Routes[0].Action.ResponseHeaders.Set["X-Frame-Options"] != "DENY" {
+		t.Fatalf("unexpected normalized response headers: %#v", cfg.Routes[0].Action.ResponseHeaders)
 	}
 	if cfg.DefaultRoute == nil || cfg.DefaultRoute.Name != "fallback" {
 		t.Fatalf("unexpected default route: %#v", cfg.DefaultRoute)
@@ -453,6 +460,40 @@ func TestValidateProxyRulesRawRejectsRestrictedRouteHeaders(t *testing.T) {
 }`,
 			wantErr: "header is not allowed in route request_headers",
 		},
+		{
+			name: "reject content-length response set",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": {
+        "response_headers": {
+          "set": { "Content-Length": "1" }
+        }
+      }
+    }
+  ]
+}`,
+			wantErr: "header is not allowed in route response_headers",
+		},
+		{
+			name: "reject set-cookie response remove",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": {
+        "response_headers": {
+          "remove": ["Set-Cookie"]
+        }
+      }
+    }
+  ]
+}`,
+			wantErr: "header is not allowed in route response_headers",
+		},
 	}
 
 	for _, tt := range tests {
@@ -510,6 +551,9 @@ func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
 		gotSet = r.Header.Get("X-Service")
 		gotAdd = r.Header.Get("X-Route")
 		gotRemoved = r.Header.Get("X-Debug")
+		w.Header().Set("X-Upstream-Replace", "origin")
+		w.Header().Add("X-Upstream-Add", "origin")
+		w.Header().Set("X-Upstream-Remove", "remove-me")
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer upstream.Close()
@@ -532,6 +576,11 @@ func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
           "set": { "X-Service": "service-a" },
           "add": { "X-Route": "service-a" },
           "remove": ["X-Debug"]
+        },
+        "response_headers": {
+          "set": { "X-Upstream-Replace": "rewritten", "X-Route-Response": "service-a" },
+          "add": { "X-Upstream-Add": "added" },
+          "remove": ["X-Upstream-Remove"]
         }
       }
     }
@@ -570,5 +619,17 @@ func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
 	}
 	if gotRemoved != "" {
 		t.Fatalf("X-Debug=%s", gotRemoved)
+	}
+	if got := rec.Header().Get("X-Upstream-Replace"); got != "rewritten" {
+		t.Fatalf("X-Upstream-Replace=%s", got)
+	}
+	if got := rec.Header().Values("X-Upstream-Add"); len(got) != 2 || got[0] != "origin" || got[1] != "added" {
+		t.Fatalf("X-Upstream-Add=%v", got)
+	}
+	if got := rec.Header().Get("X-Upstream-Remove"); got != "" {
+		t.Fatalf("X-Upstream-Remove=%s", got)
+	}
+	if got := rec.Header().Get("X-Route-Response"); got != "service-a" {
+		t.Fatalf("X-Route-Response=%s", got)
 	}
 }

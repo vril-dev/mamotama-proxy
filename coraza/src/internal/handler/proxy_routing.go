@@ -30,6 +30,18 @@ var proxyRouteRestrictedHeaders = map[string]struct{}{
 	"X-Forwarded-Proto":   {},
 }
 
+var proxyRouteRestrictedResponseHeaders = map[string]struct{}{
+	"Connection":        {},
+	"Content-Length":    {},
+	"Keep-Alive":        {},
+	"Proxy-Connection":  {},
+	"Set-Cookie":        {},
+	"TE":                {},
+	"Trailer":           {},
+	"Transfer-Encoding": {},
+	"Upgrade":           {},
+}
+
 type ProxyRoute struct {
 	Name     string           `json:"name,omitempty"`
 	Enabled  *bool            `json:"enabled,omitempty"`
@@ -49,9 +61,10 @@ type ProxyRoutePathMatch struct {
 }
 
 type ProxyRouteAction struct {
-	Upstream       string                      `json:"upstream,omitempty"`
-	PathRewrite    *ProxyRoutePathRewrite      `json:"path_rewrite,omitempty"`
-	RequestHeaders *ProxyRouteHeaderOperations `json:"request_headers,omitempty"`
+	Upstream        string                      `json:"upstream,omitempty"`
+	PathRewrite     *ProxyRoutePathRewrite      `json:"path_rewrite,omitempty"`
+	RequestHeaders  *ProxyRouteHeaderOperations `json:"request_headers,omitempty"`
+	ResponseHeaders *ProxyRouteHeaderOperations `json:"response_headers,omitempty"`
 }
 
 type ProxyRoutePathRewrite struct {
@@ -90,7 +103,8 @@ type proxyRouteDecision struct {
 	SelectedUpstreamURL string
 	Target              *url.URL
 	HealthKey           string
-	HeaderOps           ProxyRouteHeaderOperations
+	RequestHeaderOps    ProxyRouteHeaderOperations
+	ResponseHeaderOps   ProxyRouteHeaderOperations
 	LogSelection        bool
 }
 
@@ -143,6 +157,7 @@ func normalizeProxyRouteAction(in ProxyRouteAction) ProxyRouteAction {
 	out.Upstream = strings.TrimSpace(out.Upstream)
 	out.PathRewrite = normalizeProxyRoutePathRewrite(out.PathRewrite)
 	out.RequestHeaders = normalizeProxyRouteHeaderOperations(out.RequestHeaders)
+	out.ResponseHeaders = normalizeProxyRouteHeaderOperations(out.ResponseHeaders)
 	return out
 }
 
@@ -359,23 +374,28 @@ func validateProxyRouteAction(action ProxyRouteAction, cfg ProxyRulesConfig, nam
 		}
 	}
 	if action.RequestHeaders != nil {
-		if err := validateProxyRouteHeaderOperations(*action.RequestHeaders, field+".request_headers"); err != nil {
+		if err := validateProxyRouteHeaderOperations(*action.RequestHeaders, field+".request_headers", proxyRouteRestrictedHeaders, "route request_headers"); err != nil {
+			return err
+		}
+	}
+	if action.ResponseHeaders != nil {
+		if err := validateProxyRouteHeaderOperations(*action.ResponseHeaders, field+".response_headers", proxyRouteRestrictedResponseHeaders, "route response_headers"); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateProxyRouteHeaderOperations(ops ProxyRouteHeaderOperations, field string) error {
+func validateProxyRouteHeaderOperations(ops ProxyRouteHeaderOperations, field string, restricted map[string]struct{}, kind string) error {
 	seen := map[string]string{}
 	for name := range ops.Set {
-		if err := validateProxyRouteHeaderName(name); err != nil {
+		if err := validateProxyRouteHeaderName(name, restricted, kind); err != nil {
 			return fmt.Errorf("%s.set.%s: %w", field, name, err)
 		}
 		seen[name] = "set"
 	}
 	for name := range ops.Add {
-		if err := validateProxyRouteHeaderName(name); err != nil {
+		if err := validateProxyRouteHeaderName(name, restricted, kind); err != nil {
 			return fmt.Errorf("%s.add.%s: %w", field, name, err)
 		}
 		if prev, ok := seen[name]; ok {
@@ -384,7 +404,7 @@ func validateProxyRouteHeaderOperations(ops ProxyRouteHeaderOperations, field st
 		seen[name] = "add"
 	}
 	for _, name := range ops.Remove {
-		if err := validateProxyRouteHeaderName(name); err != nil {
+		if err := validateProxyRouteHeaderName(name, restricted, kind); err != nil {
 			return fmt.Errorf("%s.remove.%s: %w", field, name, err)
 		}
 		if prev, ok := seen[name]; ok {
@@ -395,15 +415,15 @@ func validateProxyRouteHeaderOperations(ops ProxyRouteHeaderOperations, field st
 	return nil
 }
 
-func validateProxyRouteHeaderName(name string) error {
+func validateProxyRouteHeaderName(name string, restricted map[string]struct{}, kind string) error {
 	if name == "" {
 		return fmt.Errorf("header name is required")
 	}
 	if !proxyRouteHeaderNamePattern.MatchString(name) {
 		return fmt.Errorf("invalid header name")
 	}
-	if _, ok := proxyRouteRestrictedHeaders[canonicalProxyRouteHeaderName(name)]; ok {
-		return fmt.Errorf("header is not allowed in route request_headers")
+	if _, ok := restricted[canonicalProxyRouteHeaderName(name)]; ok {
+		return fmt.Errorf("header is not allowed in %s", kind)
 	}
 	return nil
 }
@@ -628,7 +648,8 @@ func buildProxyRouteDecision(originalHost string, originalPath string, originalR
 		SelectedUpstreamURL: selectedURL,
 		Target:              target,
 		HealthKey:           healthKey,
-		HeaderOps:           valueOrZero(action.RequestHeaders),
+		RequestHeaderOps:    valueOrZero(action.RequestHeaders),
+		ResponseHeaderOps:   valueOrZero(action.ResponseHeaders),
 		LogSelection:        source != proxyRouteResolutionLegacy,
 	}, nil
 }
@@ -796,7 +817,7 @@ func joinProxyRoutePath(prefix string, suffix string) string {
 	return prefix + "/" + suffix
 }
 
-func applyProxyRouteRequestHeaders(header http.Header, ops ProxyRouteHeaderOperations) {
+func applyProxyRouteHeaders(header http.Header, ops ProxyRouteHeaderOperations) {
 	if header == nil {
 		return
 	}
