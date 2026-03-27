@@ -167,6 +167,7 @@ sudo sysctl --system
 | `/bypass` | バイパス設定の閲覧・編集（waf.bypassを直接操作） |
 | `/country-block` | 国別ブロック設定の閲覧・編集（country-block.conf を直接操作） |
 | `/rate-limit` | レート制限設定の閲覧・編集（rate-limit.conf を直接操作） |
+| `/ip-reputation` | IP reputation feed と CIDR 例外設定の閲覧・編集（`conf/ip-reputation.conf` を直接操作） |
 | `/notifications` | 集計通知設定の閲覧・編集（`conf/notifications.conf` を直接操作） |
 | `/bot-defense` | Bot defense設定の閲覧・編集（bot-defense.conf を直接操作） |
 | `/semantic` | Semantic Security設定の閲覧・編集（semantic.conf を直接操作） |
@@ -198,6 +199,9 @@ sudo sysctl --system
 
 #### Rate Limit
 ![Rate Limit](docs/images/ui-samples/07-rate-limit.png)
+
+#### IP Reputation
+![IP Reputation](docs/images/ui-samples/15-ip-reputation.png)
 
 #### Notifications
 ![Notifications](docs/images/ui-samples/14-notifications.png)

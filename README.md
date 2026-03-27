@@ -166,6 +166,7 @@ You can still edit source under `web/mamotama-admin/` and rebuild assets for emb
 | `/bypass` | View/edit bypass config directly (`waf.bypass`) |
 | `/country-block` | View/edit country block config directly (`country-block.conf`) |
 | `/rate-limit` | View/edit rate-limit config directly (`rate-limit.conf`) |
+| `/ip-reputation` | View/edit IP reputation feeds and CIDR overrides directly (`conf/ip-reputation.conf`) |
 | `/notifications` | View/edit aggregate notification config directly (`conf/notifications.conf`) |
 | `/bot-defense` | View/edit bot-defense config directly (`bot-defense.conf`) |
 | `/semantic` | View/edit semantic security config directly (`semantic.conf`) |
@@ -197,6 +198,9 @@ Upstream failure response behavior:
 
 #### Rate Limit
 ![Rate Limit](docs/images/ui-samples/07-rate-limit.png)
+
+#### IP Reputation
+![IP Reputation](docs/images/ui-samples/15-ip-reputation.png)
 
 #### Notifications
 ![Notifications](docs/images/ui-samples/14-notifications.png)
