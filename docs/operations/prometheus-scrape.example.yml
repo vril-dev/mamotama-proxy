@@ -1,0 +1,10 @@
+scrape_configs:
+  - job_name: mamotama-proxy
+    metrics_path: /mamotama-api/metrics
+    scheme: https
+    static_configs:
+      - targets:
+          - proxy.example.com
+    authorization:
+      type: Bearer
+      credentials: replace-with-admin-api-key

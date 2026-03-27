@@ -29,6 +29,11 @@ var (
 	ServerTLSMinVersion       string
 	ServerTLSRedirectHTTP     bool
 	ServerTLSHTTPRedirectAddr string
+	ServerTLSACMEEnabled      bool
+	ServerTLSACMEEmail        string
+	ServerTLSACMEDomains      []string
+	ServerTLSACMECacheDir     string
+	ServerTLSACMEStaging      bool
 	RuntimeGOMAXPROCS         int
 	RuntimeMemoryLimitMB      int
 	RulesFile                 string
@@ -38,13 +43,22 @@ var (
 	BotDefenseFile            string
 	SemanticFile              string
 	NotificationFile          string
+	IPReputationFile          string
 	LogFile                   string
 	StrictOverride            bool
 	APIBasePath               string
+	AdminExternalMode         string
+	AdminTrustedCIDRs         []string
+	AdminTrustForwardedFor    bool
 	APIKeyPrimary             string
 	APIKeySecondary           string
 	APIAuthDisable            bool
 	APICORSOrigins            []string
+	AdminRateLimitEnabled     bool
+	AdminRateLimitRPS         int
+	AdminRateLimitBurst       int
+	AdminRateLimitStatusCode  int
+	AdminRateLimitRetryAfter  int
 	CRSEnable                 bool
 	CRSSetupFile              string
 	CRSRulesDir               string
@@ -69,6 +83,15 @@ var (
 	DBPath          string
 	DBRetentionDays int
 	DBSyncInterval  time.Duration
+	FileRotateBytes int64
+	FileMaxBytes    int64
+	FileRetention   time.Duration
+
+	TracingEnabled      bool
+	TracingServiceName  string
+	TracingOTLPEndpoint string
+	TracingInsecure     bool
+	TracingSampleRatio  float64
 )
 
 func LoadEnv() {
@@ -113,6 +136,11 @@ func applyAppConfig(cfg appConfigFile) {
 	if ServerTLSHTTPRedirectAddr != "" {
 		ServerTLSHTTPRedirectAddr = parseListenAddr(ServerTLSHTTPRedirectAddr)
 	}
+	ServerTLSACMEEnabled = cfg.Server.TLS.ACME.Enabled
+	ServerTLSACMEEmail = strings.TrimSpace(cfg.Server.TLS.ACME.Email)
+	ServerTLSACMEDomains = append([]string(nil), cfg.Server.TLS.ACME.Domains...)
+	ServerTLSACMECacheDir = strings.TrimSpace(cfg.Server.TLS.ACME.CacheDir)
+	ServerTLSACMEStaging = cfg.Server.TLS.ACME.Staging
 	RuntimeGOMAXPROCS = parseRuntimeGOMAXPROCS(strconv.Itoa(cfg.Runtime.GOMAXPROCS))
 	RuntimeMemoryLimitMB = parseRuntimeMemoryLimitMB(strconv.Itoa(cfg.Runtime.MemoryLimitMB))
 
@@ -144,6 +172,10 @@ func applyAppConfig(cfg appConfigFile) {
 	if NotificationFile == "" {
 		NotificationFile = "conf/notifications.conf"
 	}
+	IPReputationFile = strings.TrimSpace(cfg.Paths.IPReputationFile)
+	if IPReputationFile == "" {
+		IPReputationFile = "conf/ip-reputation.conf"
+	}
 	LogFile = strings.TrimSpace(cfg.Paths.LogFile)
 
 	StrictOverride = cfg.Admin.StrictOverride
@@ -157,9 +189,17 @@ func applyAppConfig(cfg appConfigFile) {
 	if APIBasePath == "/" {
 		log.Fatal("api_base_path cannot be root path '/'")
 	}
+	AdminExternalMode = strings.TrimSpace(cfg.Admin.ExternalMode)
+	AdminTrustedCIDRs = append([]string(nil), cfg.Admin.TrustedCIDRs...)
+	AdminTrustForwardedFor = cfg.Admin.TrustForwardedFor
 	APIKeyPrimary = strings.TrimSpace(cfg.Admin.APIKeyPrimary)
 	APIKeySecondary = strings.TrimSpace(cfg.Admin.APIKeySecondary)
 	APIAuthDisable = cfg.Admin.APIAuthDisable
+	AdminRateLimitEnabled = cfg.Admin.RateLimit.Enabled
+	AdminRateLimitRPS = cfg.Admin.RateLimit.RPS
+	AdminRateLimitBurst = cfg.Admin.RateLimit.Burst
+	AdminRateLimitStatusCode = cfg.Admin.RateLimit.StatusCode
+	AdminRateLimitRetryAfter = cfg.Admin.RateLimit.RetryAfterSeconds
 	APICORSOrigins = make([]string, 0, len(cfg.Admin.CORSAllowedOrigins))
 	for _, origin := range cfg.Admin.CORSAllowedOrigins {
 		origin = strings.TrimSpace(origin)
@@ -226,8 +266,17 @@ func applyAppConfig(cfg appConfigFile) {
 	}
 	dbSyncSec := parseDBSyncIntervalSec(strconv.Itoa(cfg.Storage.DBSyncIntervalSec))
 	DBSyncInterval = time.Duration(dbSyncSec) * time.Second
+	FileRotateBytes = cfg.Storage.FileRotateBytes
+	FileMaxBytes = cfg.Storage.FileMaxBytes
+	FileRetention = time.Duration(cfg.Storage.FileRetentionDays) * 24 * time.Hour
 
 	AllowInsecureDefaults = cfg.Admin.AllowInsecureDefaults
+
+	TracingEnabled = cfg.Observability.Tracing.Enabled
+	TracingServiceName = strings.TrimSpace(cfg.Observability.Tracing.ServiceName)
+	TracingOTLPEndpoint = strings.TrimSpace(cfg.Observability.Tracing.OTLPEndpoint)
+	TracingInsecure = cfg.Observability.Tracing.Insecure
+	TracingSampleRatio = cfg.Observability.Tracing.SampleRatio
 }
 
 func enforceSecureDefaults() {
