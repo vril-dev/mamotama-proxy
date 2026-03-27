@@ -103,6 +103,48 @@ Container startup uses only:
 - When ACME and `server.tls.redirect_http=true` are both enabled, the plain HTTP listener serves `/.well-known/acme-challenge/` and redirects all other traffic to HTTPS.
 - `server.tls.http_redirect_addr` must be different from `server.listen_addr`.
 
+TLS certificate selection happens during the TLS handshake, before host/path routing runs. In other words, `routes[].match.hosts` does not pick certificates; the configured listener certificate or ACME/SNI result must already cover the requested host.
+
+Example: exact host routing with ACME-managed certificates
+
+```json
+"server": {
+  "listen_addr": ":443",
+  "tls": {
+    "enabled": true,
+    "min_version": "tls1.2",
+    "redirect_http": true,
+    "http_redirect_addr": ":80",
+    "acme": {
+      "enabled": true,
+      "email": "ops@example.com",
+      "domains": ["api.example.com", "admin.example.com"],
+      "cache_dir": "/var/lib/mamotama/acme"
+    }
+  }
+}
+```
+
+Example: wildcard host routing with a manual wildcard certificate
+
+```json
+"server": {
+  "listen_addr": ":443",
+  "tls": {
+    "enabled": true,
+    "cert_file": "/etc/mamotama/tls/wildcard-example-com-fullchain.pem",
+    "key_file": "/etc/mamotama/tls/wildcard-example-com-privkey.pem",
+    "min_version": "tls1.2",
+    "redirect_http": true,
+    "http_redirect_addr": ":80"
+  }
+}
+```
+
+- Use ACME when you have a fixed list of exact hosts such as `api.example.com` and `admin.example.com`.
+- Use a manual wildcard certificate when your routing rules rely on wildcard hosts such as `*.example.com`.
+- The current built-in ACME flow is documented around exact host domains. Wildcard route matching does not automatically imply wildcard certificate issuance.
+
 ### Admin UI
 
 At startup, if `admin.api_key_primary` is too short or known-weak, Coraza fails to start in secure mode.

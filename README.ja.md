@@ -104,6 +104,48 @@ Coraza + CRS WAFプロジェクト
 - ACME と `server.tls.redirect_http=true` を併用した場合、plain HTTP listener は `/.well-known/acme-challenge/` を処理し、それ以外を HTTPS へ redirect します。
 - `server.tls.http_redirect_addr` は `server.listen_addr` と別アドレスにしてください。
 
+TLS 証明書の選択は host/path routing より前、つまり TLS handshake の段階で決まります。`routes[].match.hosts` が証明書を切り替えるわけではなく、listener 側の証明書または ACME/SNI の結果が、その host を事前にカバーしている必要があります。
+
+例: exact host routing を ACME で運用する場合
+
+```json
+"server": {
+  "listen_addr": ":443",
+  "tls": {
+    "enabled": true,
+    "min_version": "tls1.2",
+    "redirect_http": true,
+    "http_redirect_addr": ":80",
+    "acme": {
+      "enabled": true,
+      "email": "ops@example.com",
+      "domains": ["api.example.com", "admin.example.com"],
+      "cache_dir": "/var/lib/mamotama/acme"
+    }
+  }
+}
+```
+
+例: wildcard host routing を手動 wildcard 証明書で運用する場合
+
+```json
+"server": {
+  "listen_addr": ":443",
+  "tls": {
+    "enabled": true,
+    "cert_file": "/etc/mamotama/tls/wildcard-example-com-fullchain.pem",
+    "key_file": "/etc/mamotama/tls/wildcard-example-com-privkey.pem",
+    "min_version": "tls1.2",
+    "redirect_http": true,
+    "http_redirect_addr": ":80"
+  }
+}
+```
+
+- `api.example.com` や `admin.example.com` のように固定の exact host を列挙できる場合は ACME が向いています。
+- `*.example.com` のような wildcard host routing を使う場合は、手動の wildcard 証明書を使う方が自然です。
+- 現在の built-in ACME の説明は exact host domains 前提です。wildcard route match を書いただけで wildcard 証明書が自動発行されるわけではありません。
+
 ### 管理UI
 
 起動時に `admin.api_key_primary` が短すぎる/既知の弱い値の場合、Corazaプロセスは安全側で起動失敗します。  
