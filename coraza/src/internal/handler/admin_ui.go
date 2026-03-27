@@ -6,6 +6,7 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -59,16 +60,60 @@ func RegisterAdminUIRoutes(r *gin.Engine) {
 	}
 
 	r.GET(base, func(c *gin.Context) {
+		if !CheckAdminUIAccess(c.Request) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		if decision := EvaluateAdminUIRateLimit(c.Request); !decision.Allowed {
+			if decision.RetryAfterSeconds > 0 {
+				c.Header("Retry-After", strconv.Itoa(decision.RetryAfterSeconds))
+			}
+			c.AbortWithStatusJSON(decision.StatusCode, gin.H{"error": "admin rate limit exceeded"})
+			return
+		}
 		serveFile(c, "index.html")
 	})
 	r.HEAD(base, func(c *gin.Context) {
+		if !CheckAdminUIAccess(c.Request) {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		if decision := EvaluateAdminUIRateLimit(c.Request); !decision.Allowed {
+			if decision.RetryAfterSeconds > 0 {
+				c.Header("Retry-After", strconv.Itoa(decision.RetryAfterSeconds))
+			}
+			c.AbortWithStatus(decision.StatusCode)
+			return
+		}
 		serveFile(c, "index.html")
 	})
 	r.GET(base+"/*filepath", func(c *gin.Context) {
+		if !CheckAdminUIAccess(c.Request) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		if decision := EvaluateAdminUIRateLimit(c.Request); !decision.Allowed {
+			if decision.RetryAfterSeconds > 0 {
+				c.Header("Retry-After", strconv.Itoa(decision.RetryAfterSeconds))
+			}
+			c.AbortWithStatusJSON(decision.StatusCode, gin.H{"error": "admin rate limit exceeded"})
+			return
+		}
 		p := strings.TrimPrefix(c.Param("filepath"), "/")
 		serveFile(c, p)
 	})
 	r.HEAD(base+"/*filepath", func(c *gin.Context) {
+		if !CheckAdminUIAccess(c.Request) {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		if decision := EvaluateAdminUIRateLimit(c.Request); !decision.Allowed {
+			if decision.RetryAfterSeconds > 0 {
+				c.Header("Retry-After", strconv.Itoa(decision.RetryAfterSeconds))
+			}
+			c.AbortWithStatus(decision.StatusCode)
+			return
+		}
 		p := strings.TrimPrefix(c.Param("filepath"), "/")
 		serveFile(c, p)
 	})

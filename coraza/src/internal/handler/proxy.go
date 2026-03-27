@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,17 +16,19 @@ import (
 	"mamotama/internal/bypassconf"
 	"mamotama/internal/cacheconf"
 	"mamotama/internal/config"
+	"mamotama/internal/observability"
 	"mamotama/internal/waf"
 )
 
 type ctxKey string
 
 const (
-	ctxKeyReqID   ctxKey = "req_id"
-	ctxKeyWafHit  ctxKey = "waf_hit"
-	ctxKeyWafRule ctxKey = "waf_rules"
-	ctxKeyIP      ctxKey = "client_ip"
-	ctxKeyCountry ctxKey = "country"
+	ctxKeyReqID            ctxKey = "req_id"
+	ctxKeyWafHit           ctxKey = "waf_hit"
+	ctxKeyWafRule          ctxKey = "waf_rules"
+	ctxKeyIP               ctxKey = "client_ip"
+	ctxKeyCountry          ctxKey = "country"
+	ctxKeySelectedUpstream ctxKey = "selected_upstream"
 )
 
 func onProxyResponse(res *http.Response) error {
@@ -61,16 +62,17 @@ func annotateWAFHit(res *http.Response) {
 	path := res.Request.URL.Path
 	status := res.StatusCode
 	emitJSONLog(map[string]any{
-		"ts":      time.Now().UTC().Format(time.RFC3339Nano),
-		"service": "coraza",
-		"level":   "INFO",
-		"event":   "waf_hit_allow",
-		"req_id":  reqID,
-		"ip":      ip,
-		"country": country,
-		"path":    path,
-		"rules":   res.Header.Get("X-WAF-RuleIDs"),
-		"status":  status,
+		"ts":       time.Now().UTC().Format(time.RFC3339Nano),
+		"service":  "coraza",
+		"level":    "INFO",
+		"event":    "waf_hit_allow",
+		"req_id":   reqID,
+		"trace_id": observability.TraceIDFromContext(ctx),
+		"ip":       ip,
+		"country":  country,
+		"path":     path,
+		"rules":    res.Header.Get("X-WAF-RuleIDs"),
+		"status":   status,
 	})
 }
 
@@ -147,15 +149,16 @@ func ProxyHandler(c *gin.Context) {
 
 	if IsCountryBlocked(country) {
 		evt := map[string]any{
-			"ts":      time.Now().UTC().Format(time.RFC3339Nano),
-			"service": "coraza",
-			"level":   "WARN",
-			"event":   "country_block",
-			"req_id":  reqID,
-			"ip":      clientIP,
-			"country": country,
-			"path":    c.Request.URL.Path,
-			"status":  http.StatusForbidden,
+			"ts":       time.Now().UTC().Format(time.RFC3339Nano),
+			"service":  "coraza",
+			"level":    "WARN",
+			"event":    "country_block",
+			"req_id":   reqID,
+			"trace_id": observability.TraceIDFromContext(c.Request.Context()),
+			"ip":       clientIP,
+			"country":  country,
+			"path":     c.Request.URL.Path,
+			"status":   http.StatusForbidden,
 		}
 		emitJSONLog(evt)
 		_ = appendEventToFile(evt)
@@ -163,19 +166,39 @@ func ProxyHandler(c *gin.Context) {
 		return
 	}
 
+	if blocked, statusCode := EvaluateIPReputation(clientIP); blocked {
+		evt := map[string]any{
+			"ts":       time.Now().UTC().Format(time.RFC3339Nano),
+			"service":  "coraza",
+			"level":    "WARN",
+			"event":    "ip_reputation",
+			"req_id":   reqID,
+			"trace_id": observability.TraceIDFromContext(c.Request.Context()),
+			"ip":       clientIP,
+			"country":  country,
+			"path":     c.Request.URL.Path,
+			"status":   statusCode,
+		}
+		emitJSONLog(evt)
+		_ = appendEventToFile(evt)
+		c.AbortWithStatus(statusCode)
+		return
+	}
+
 	botDecision := EvaluateBotDefense(c.Request, clientIP, time.Now().UTC())
 	if !botDecision.Allowed {
 		evt := map[string]any{
-			"ts":      time.Now().UTC().Format(time.RFC3339Nano),
-			"service": "coraza",
-			"level":   "WARN",
-			"event":   "bot_challenge",
-			"req_id":  reqID,
-			"ip":      clientIP,
-			"country": country,
-			"path":    c.Request.URL.Path,
-			"status":  botDecision.Status,
-			"mode":    botDecision.Mode,
+			"ts":       time.Now().UTC().Format(time.RFC3339Nano),
+			"service":  "coraza",
+			"level":    "WARN",
+			"event":    "bot_challenge",
+			"req_id":   reqID,
+			"trace_id": observability.TraceIDFromContext(c.Request.Context()),
+			"ip":       clientIP,
+			"country":  country,
+			"path":     c.Request.URL.Path,
+			"status":   botDecision.Status,
+			"mode":     botDecision.Mode,
 		}
 		emitJSONLog(evt)
 		_ = appendEventToFile(evt)
@@ -196,6 +219,7 @@ func ProxyHandler(c *gin.Context) {
 			"level":           "WARN",
 			"event":           "semantic_anomaly",
 			"req_id":          reqID,
+			"trace_id":        observability.TraceIDFromContext(c.Request.Context()),
 			"ip":              clientIP,
 			"country":         country,
 			"path":            c.Request.URL.Path,
@@ -229,6 +253,7 @@ func ProxyHandler(c *gin.Context) {
 			"level":       "WARN",
 			"event":       "rate_limited",
 			"req_id":      reqID,
+			"trace_id":    observability.TraceIDFromContext(c.Request.Context()),
 			"ip":          clientIP,
 			"country":     country,
 			"path":        c.Request.URL.Path,
@@ -289,16 +314,17 @@ func ProxyHandler(c *gin.Context) {
 
 	if it := tx.Interruption(); it != nil {
 		evt := map[string]any{
-			"ts":      time.Now().UTC().Format(time.RFC3339Nano),
-			"service": "coraza",
-			"level":   "WARN",
-			"event":   "waf_block",
-			"req_id":  reqID,
-			"ip":      clientIP,
-			"country": country,
-			"path":    c.Request.URL.Path,
-			"rule_id": it.RuleID,
-			"status":  it.Status,
+			"ts":       time.Now().UTC().Format(time.RFC3339Nano),
+			"service":  "coraza",
+			"level":    "WARN",
+			"event":    "waf_block",
+			"req_id":   reqID,
+			"trace_id": observability.TraceIDFromContext(c.Request.Context()),
+			"ip":       clientIP,
+			"country":  country,
+			"path":     c.Request.URL.Path,
+			"rule_id":  it.RuleID,
+			"status":   it.Status,
 		}
 		emitJSONLog(evt)
 		_ = appendEventToFile(evt)
@@ -342,20 +368,7 @@ func appendEventToFile(obj map[string]any) error {
 	if path == "" {
 		path = "/app/logs/coraza/waf-events.ndjson"
 	}
-
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	b, err := json.Marshal(obj)
-	if err != nil {
-		return err
-	}
-	_, err = f.Write(append(b, '\n'))
-
-	return err
+	return appendWAFEvent(obj, path)
 }
 
 func requestPath(r *http.Request) string {

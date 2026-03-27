@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"mamotama/internal/config"
 	"mamotama/internal/handler"
 	"mamotama/internal/middleware"
+	"mamotama/internal/observability"
 	"mamotama/internal/waf"
 )
 
@@ -99,11 +101,38 @@ func main() {
 		}
 		log.Printf("[NOTIFY][INIT] loaded")
 	}
+	if err := handler.InitIPReputation(config.IPReputationFile); err != nil {
+		log.Printf("[IP_REPUTATION][INIT][ERR] %v (path=%s)", err, config.IPReputationFile)
+	} else {
+		if err := handler.SyncIPReputationStorage(); err != nil {
+			log.Printf("[IP_REPUTATION][DB][WARN] sync failed (fallback=file): %v", err)
+		}
+		log.Printf("[IP_REPUTATION][INIT] loaded")
+	}
+	if err := handler.InitAdminGuards(); err != nil {
+		log.Fatalf("[ADMIN][FATAL] failed to initialize admin guards: %v", err)
+	}
+	shutdownTracing, err := observability.SetupTracing(context.Background(), observability.TracingConfig{
+		Enabled:      config.TracingEnabled,
+		ServiceName:  config.TracingServiceName,
+		OTLPEndpoint: config.TracingOTLPEndpoint,
+		Insecure:     config.TracingInsecure,
+		SampleRatio:  config.TracingSampleRatio,
+	})
+	if err != nil {
+		log.Fatalf("[TRACING][FATAL] initialize tracing: %v", err)
+	}
+	defer func() {
+		if err := shutdownTracing(context.Background()); err != nil {
+			log.Printf("[TRACING][WARN] shutdown tracing: %v", err)
+		}
+	}()
 
 	_, _, proxyCfg, _, _ := handler.ProxyRulesSnapshot()
 	log.Println("[INFO] WAF upstream target:", proxyCfg.UpstreamURL)
 
 	r := gin.Default()
+	r.Use(observability.GinTracingMiddleware())
 
 	// Never trust client-sent forwarding headers unless explicitly configured.
 	if err := r.SetTrustedProxies(nil); err != nil {
@@ -135,7 +164,12 @@ func main() {
 		log.Println("[SECURITY] CORS disabled (same-origin only)")
 	}
 
-	api := r.Group(config.APIBasePath, middleware.APIKeyAuth())
+	api := r.Group(
+		config.APIBasePath,
+		handler.AdminAccessMiddleware("api"),
+		handler.AdminRateLimitMiddleware(),
+		middleware.APIKeyAuth(),
+	)
 	{
 		api.GET("/", func(c *gin.Context) {
 			c.JSON(200, gin.H{
@@ -151,6 +185,8 @@ func main() {
 					config.APIBasePath + "/rate-limit-rules",
 					config.APIBasePath + "/notifications",
 					config.APIBasePath + "/notifications/status",
+					config.APIBasePath + "/ip-reputation",
+					config.APIBasePath + "/ip-reputation:validate",
 					config.APIBasePath + "/bot-defense-rules",
 					config.APIBasePath + "/semantic-rules",
 					config.APIBasePath + "/proxy-rules",
@@ -195,6 +231,9 @@ func main() {
 		api.POST("/notifications/validate", handler.ValidateNotificationRules)
 		api.POST("/notifications/test", handler.TestNotificationRules)
 		api.PUT("/notifications", handler.PutNotificationRules)
+		api.GET("/ip-reputation", handler.GetIPReputation)
+		api.POST("/ip-reputation:validate", handler.ValidateIPReputation)
+		api.PUT("/ip-reputation", handler.PutIPReputation)
 		api.GET("/bot-defense-rules", handler.GetBotDefenseRules)
 		api.POST("/bot-defense-rules:validate", handler.ValidateBotDefenseRules)
 		api.PUT("/bot-defense-rules", handler.PutBotDefenseRules)
@@ -255,13 +294,12 @@ func main() {
 	}
 
 	if config.ServerTLSEnabled {
-		tlsConfig, err := config.BuildServerTLSConfig(config.ServerTLSCertFile, config.ServerTLSKeyFile, config.ServerTLSMinVersion)
+		tlsConfig, redirectSrv, err := buildManagedServerTLSConfig()
 		if err != nil {
 			log.Fatalf("[FATAL] build server tls config: %v", err)
 		}
 		srv.TLSConfig = tlsConfig
-		if config.ServerTLSRedirectHTTP {
-			redirectSrv := newHTTPRedirectServer(config.ServerTLSHTTPRedirectAddr, config.ListenAddr)
+		if redirectSrv != nil {
 			go func() {
 				log.Printf("[INFO] starting HTTP redirect server on %s", config.ServerTLSHTTPRedirectAddr)
 				if err := redirectSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -270,8 +308,10 @@ func main() {
 			}()
 		}
 		log.Printf("[INFO] starting HTTPS server on %s", config.ListenAddr)
-		log.Printf("[SERVER] tls enabled cert_file=%s min_version=%s redirect_http=%t redirect_addr=%s",
+		log.Printf("[SERVER] tls enabled source=%s cert_file=%s acme_domains=%s min_version=%s redirect_http=%t redirect_addr=%s",
+			handler.ServerTLSRuntimeStatusSnapshot().Source,
 			config.ServerTLSCertFile,
+			strings.Join(config.ServerTLSACMEDomains, ","),
 			config.ServerTLSMinVersion,
 			config.ServerTLSRedirectHTTP,
 			config.ServerTLSHTTPRedirectAddr,

@@ -98,8 +98,10 @@ Coraza + CRS WAFプロジェクト
 ```
 
 - 既定値は `server.tls.enabled=false` です。
-- 初版は手動証明書ファイル（`cert_file` / `key_file`）のみ対応です。ACME 自動取得は含みません。
+- 手動証明書ファイル（`cert_file` / `key_file`）は引き続き利用できます。
+- ACME は `server.tls.acme.enabled=true` と `server.tls.acme.email`, `server.tls.acme.domains`, `server.tls.acme.cache_dir`、必要なら `server.tls.acme.staging=true` で有効化できます。
 - `server.tls.redirect_http=true` にすると、別の plain HTTP listener を起動して HTTPS へ permanent redirect します。
+- ACME と `server.tls.redirect_http=true` を併用した場合、plain HTTP listener は `/.well-known/acme-challenge/` を処理し、それ以外を HTTPS へ redirect します。
 - `server.tls.http_redirect_addr` は `server.listen_addr` と別アドレスにしてください。
 
 ### 管理UI
@@ -487,6 +489,9 @@ Claudeコマンドプロバイダのローカルモックテスト:
 | POST | `/mamotama-api/notifications/validate` | 通知設定の構文検証のみ（保存なし） |
 | POST | `/mamotama-api/notifications/test` | 現在設定でテスト通知を送信 |
 | PUT  | `/mamotama-api/notifications` | 通知設定ファイルを保存（`If-Match` に `ETag` を指定して楽観ロック） |
+| GET  | `/mamotama-api/ip-reputation` | IP reputation 設定と runtime status を取得 |
+| POST | `/mamotama-api/ip-reputation:validate` | IP reputation 設定の構文検証のみ（保存なし） |
+| PUT  | `/mamotama-api/ip-reputation` | IP reputation 設定ファイルを保存（`If-Match` に `ETag` を指定して楽観ロック） |
 | GET  | `/mamotama-api/bot-defense-rules` | Bot defense設定ファイルの内容を取得 |
 | POST | `/mamotama-api/bot-defense-rules:validate` | Bot defense設定の構文検証のみ（保存なし） |
 | PUT  | `/mamotama-api/bot-defense-rules` | Bot defense設定ファイルを保存（`If-Match` に `ETag` を指定して楽観ロック） |
@@ -504,11 +509,26 @@ Claudeコマンドプロバイダのローカルモックテスト:
 
 `GET /mamotama-api/status` には built-in listener TLS の read-only フィールドも含まれます:
 - `server_tls_enabled`
+- `server_tls_source`
 - `server_tls_cert_file`
 - `server_tls_key_configured`
 - `server_tls_min_version`
 - `server_tls_redirect_http`
 - `server_tls_http_redirect_addr`
+- `server_tls_cert_not_after`
+- `server_tls_last_error`
+- `server_tls_acme_enabled`
+- `server_tls_acme_domains`
+- `server_tls_acme_staging`
+- `server_tls_acme_success_total`
+- `server_tls_acme_failure_total`
+
+`GET /mamotama-api/status` には proxy HA/runtime フィールドも含まれます:
+- `proxy_upstreams`
+- `proxy_load_balancing_strategy`
+- `upstream_health_strategy`
+- `upstream_health_active_backends`
+- `upstream_health_healthy_backends`
 
 ---
 
@@ -601,7 +621,40 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 
 - `/mamotama-api/metrics` で rate-limit の blocked / adaptive カウンタ増加を確認する
 - `/mamotama-api/metrics` で login / write 系パス周辺の semantic action カウンタを確認する
+- `/mamotama-api/metrics` で `mamotama_server_tls_cert_not_after_unix`, `mamotama_server_tls_acme_failure_total`, upstream healthy-backend gauge を確認する
 - 調整時はログの `rl_key_hash`, `adaptive`, `risk_score`, `reason_list`, `score_breakdown` を見る
+
+### IP Reputation 設定
+
+管理ダッシュボード `/ip-reputation` から、`paths.ip_reputation_file`（既定: `conf/ip-reputation.conf`）を編集できます。
+評価は bot defense / semantic / WAF より前に行われ、`ip_reputation` event と通知 source に反映されます。
+
+- `feed_urls` には local file（`/path/to/feed.txt` または `file:///...`）と HTTP/HTTPS URL を指定できます
+- `allowlist` / `blocklist` は IPv4 / IPv6 CIDR の両方に対応します
+- `fail_open=true` の場合、全 remote feed refresh が失敗しても通信は継続します
+- `/mamotama-api/status` の `last_refresh_at`, `last_refresh_error`, `effective_allow_count`, `effective_block_count` を監視してください
+
+### WebSocket の検査範囲
+
+- HTTP upgrade handshake は通常の request と同様に検査されます
+- upgrade 後の WebSocket frame は pass-through で、WAF/body inspect は行いません
+- response buffering や HTML 保守ページは upgraded stream には適用されません
+
+### 管理面の hardening
+
+- `admin.external_mode` で外部到達性を制御します: `deny_external`, `api_only_external`, `full_external`
+- `admin.trusted_cidrs` には `127.0.0.1/32`, `::1/128` のような IPv4 / IPv6 CIDR を指定できます
+- `admin.trust_forwarded_for=true` は、直前 peer がすでに `admin.trusted_cidrs` 内にいる場合だけ有効です
+- `admin.rate_limit` で管理 API / UI 専用の throttling を設定できます。reverse-proxy 経路が把握できるまでは既定の disabled のままが無難です
+
+### Observability
+
+- `/mamotama-api/metrics` は rate-limit / semantic / notification に加えて TLS と upstream HA gauge も返します
+- file backend の `waf-events.ndjson` rotation は `storage.file_rotate_bytes`, `storage.file_max_bytes`, `storage.file_retention_days` で制御できます
+- `observability.tracing` で OTLP tracing を有効化できます
+- sample asset:
+  - [docs/operations/prometheus-scrape.example.yml](docs/operations/prometheus-scrape.example.yml)
+  - [docs/operations/grafana-dashboard.json](docs/operations/grafana-dashboard.json)
 
 ### Notifications 設定
 

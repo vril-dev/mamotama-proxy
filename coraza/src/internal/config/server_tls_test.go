@@ -88,6 +88,11 @@ func TestLoadAppConfigFileRejectsInvalidServerTLSConfig(t *testing.T) {
 			body: `{"enabled": true, "cert_file": ` + jsonString(certFile) + `, "key_file": ` + jsonString(keyFile) + `, "redirect_http": true}`,
 			want: "server.tls.http_redirect_addr is required when server.tls.redirect_http=true",
 		},
+		{
+			name: "acme manual cert conflict",
+			body: `{"enabled": true, "cert_file": ` + jsonString(certFile) + `, "key_file": ` + jsonString(keyFile) + `, "acme": {"enabled": true, "email": "ops@example.com", "domains": ["proxy.example.com"], "cache_dir": "/tmp/acme"}}`,
+			want: "server.tls.acme.enabled cannot be combined with server.tls.cert_file or server.tls.key_file",
+		},
 	}
 	for _, tc := range cases {
 		tc := tc

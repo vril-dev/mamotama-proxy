@@ -13,6 +13,11 @@ func normalizeAppServerTLSConfig(cfg *appServerTLSConfig) {
 	cfg.KeyFile = strings.TrimSpace(cfg.KeyFile)
 	cfg.MinVersion = normalizeServerTLSMinVersion(cfg.MinVersion)
 	cfg.HTTPRedirectAddr = strings.TrimSpace(cfg.HTTPRedirectAddr)
+	cfg.ACME.Email = strings.TrimSpace(cfg.ACME.Email)
+	cfg.ACME.CacheDir = strings.TrimSpace(cfg.ACME.CacheDir)
+	for i := range cfg.ACME.Domains {
+		cfg.ACME.Domains[i] = strings.TrimSpace(cfg.ACME.Domains[i])
+	}
 }
 
 func normalizeServerTLSMinVersion(v string) string {
@@ -64,11 +69,26 @@ func validateAppServerTLSConfig(server appServerConfig) error {
 		}
 		return nil
 	}
-	if tlsCfg.CertFile == "" || tlsCfg.KeyFile == "" {
-		return fmt.Errorf("server.tls.cert_file and server.tls.key_file are required when server.tls.enabled=true")
-	}
-	if _, err := BuildServerTLSConfig(tlsCfg.CertFile, tlsCfg.KeyFile, tlsCfg.MinVersion); err != nil {
-		return fmt.Errorf("server.tls %w", err)
+	if tlsCfg.ACME.Enabled {
+		if tlsCfg.CertFile != "" || tlsCfg.KeyFile != "" {
+			return fmt.Errorf("server.tls.acme.enabled cannot be combined with server.tls.cert_file or server.tls.key_file")
+		}
+		if strings.TrimSpace(tlsCfg.ACME.Email) == "" {
+			return fmt.Errorf("server.tls.acme.email is required when server.tls.acme.enabled=true")
+		}
+		if len(tlsCfg.ACME.Domains) == 0 {
+			return fmt.Errorf("server.tls.acme.domains is required when server.tls.acme.enabled=true")
+		}
+		if strings.TrimSpace(tlsCfg.ACME.CacheDir) == "" {
+			return fmt.Errorf("server.tls.acme.cache_dir is required when server.tls.acme.enabled=true")
+		}
+	} else {
+		if tlsCfg.CertFile == "" || tlsCfg.KeyFile == "" {
+			return fmt.Errorf("server.tls.cert_file and server.tls.key_file are required when server.tls.enabled=true")
+		}
+		if _, err := BuildServerTLSConfig(tlsCfg.CertFile, tlsCfg.KeyFile, tlsCfg.MinVersion); err != nil {
+			return fmt.Errorf("server.tls %w", err)
+		}
 	}
 	if tlsCfg.RedirectHTTP {
 		if strings.TrimSpace(tlsCfg.HTTPRedirectAddr) == "" {

@@ -1,0 +1,201 @@
+package handler
+
+import (
+	"compress/gzip"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"mamotama/internal/config"
+)
+
+type archivedWAFLogFile struct {
+	Path    string
+	Size    int64
+	ModTime time.Time
+	Active  bool
+}
+
+type wafLogArchive struct {
+	mu sync.Mutex
+}
+
+var runtimeWAFLogArchive = &wafLogArchive{}
+
+func appendWAFEvent(obj map[string]any, path string) error {
+	if config.StorageBackend != "file" {
+		return appendWAFEventRaw(obj, path)
+	}
+	return runtimeWAFLogArchive.Append(obj, path)
+}
+
+func appendWAFEventRaw(obj map[string]any, path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(append(raw, '\n'))
+	return err
+}
+
+func (a *wafLogArchive) Append(obj map[string]any, path string) error {
+	if a == nil {
+		return appendWAFEventRaw(obj, path)
+	}
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		return err
+	}
+	line := append(raw, '\n')
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if config.FileRotateBytes > 0 {
+		if info, err := os.Stat(path); err == nil && info.Size() > 0 && info.Size()+int64(len(line)) > config.FileRotateBytes {
+			if err := rotateWAFLogFile(path); err != nil {
+				return err
+			}
+		}
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(line); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return pruneWAFLogArchives(path, time.Now().UTC())
+}
+
+func rotateWAFLogFile(path string) error {
+	src, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer src.Close()
+
+	archivePath := fmt.Sprintf("%s.%d.gz", path, time.Now().UTC().UnixNano())
+	dst, err := os.OpenFile(archivePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+	if err != nil {
+		return err
+	}
+	gz := gzip.NewWriter(dst)
+	if _, err := io.Copy(gz, src); err != nil {
+		_ = gz.Close()
+		_ = dst.Close()
+		return err
+	}
+	if err := gz.Close(); err != nil {
+		_ = dst.Close()
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func pruneWAFLogArchives(path string, now time.Time) error {
+	files, err := listManagedWAFLogFiles(path)
+	if err != nil {
+		return err
+	}
+	if config.FileRetention > 0 {
+		cutoff := now.Add(-config.FileRetention)
+		for _, file := range files {
+			if file.Active {
+				continue
+			}
+			if file.ModTime.Before(cutoff) {
+				_ = os.Remove(file.Path)
+			}
+		}
+		files, err = listManagedWAFLogFiles(path)
+		if err != nil {
+			return err
+		}
+	}
+	if config.FileMaxBytes > 0 {
+		total := int64(0)
+		for _, file := range files {
+			total += file.Size
+		}
+		if total > config.FileMaxBytes {
+			sort.Slice(files, func(i, j int) bool {
+				if files[i].ModTime.Equal(files[j].ModTime) {
+					return files[i].Path < files[j].Path
+				}
+				return files[i].ModTime.Before(files[j].ModTime)
+			})
+			for _, file := range files {
+				if total <= config.FileMaxBytes {
+					break
+				}
+				if file.Active {
+					continue
+				}
+				total -= file.Size
+				_ = os.Remove(file.Path)
+			}
+		}
+	}
+	return nil
+}
+
+func listManagedWAFLogFiles(path string) ([]archivedWAFLogFile, error) {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := make([]archivedWAFLogFile, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if name != base && !strings.HasPrefix(name, base+".") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, archivedWAFLogFile{
+			Path:    filepath.Join(dir, name),
+			Size:    info.Size(),
+			ModTime: info.ModTime().UTC(),
+			Active:  name == base,
+		})
+	}
+	return out, nil
+}

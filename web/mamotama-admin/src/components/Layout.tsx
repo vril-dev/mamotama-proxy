@@ -15,6 +15,7 @@ const navItems: NavItem[] = [
   { to: "/bypass", label: "Bypass Rules", hint: "path overrides" },
   { to: "/country-block", label: "Country Block", hint: "country deny list" },
   { to: "/rate-limit", label: "Rate Limit", hint: "traffic policies" },
+  { to: "/ip-reputation", label: "IP Reputation", hint: "allow/block feeds and CIDRs" },
   { to: "/notifications", label: "Notifications", hint: "state-based alert delivery" },
   { to: "/bot-defense", label: "Bot Defense", hint: "ua challenge policy" },
   { to: "/semantic", label: "Semantic Security", hint: "heuristic anomaly scoring" },
