@@ -180,23 +180,26 @@ sudo sysctl --system
 - `error_redirect_url` を設定すると、`GET` / `HEAD` はその URL へ redirect し、それ以外のメソッドには plain text の `503 Service Unavailable` を返します。
 - `error_html_file` と `error_redirect_url` は排他的です。保護対象アプリごとにどちらか一方を選んでください。
 
-`conf/proxy.json` のフェーズ1/2.1/2.2ルーティング:
+`conf/proxy.json` のフェーズ1/2.1/2.2/2.3ルーティング:
 - route の評価順は固定です。まず一致した `routes[]`、一致しなければ `default_route`、それも無ければ従来の `upstream_url` / `upstreams[]` にフォールバックします。
 - host match は exact host と `*.example.com` 形式の wildcard host をサポートします。比較は大小文字を無視し、request の port を除去し、末尾の `.` を取り除いて行います。wildcard はサブドメイン専用で、`example.com` 自体は `*.example.com` に一致しません。
 - path match は exact path、セグメント境界を考慮した prefix path、regex path をサポートします。prefix `/servicea/` は `/servicea`、`/servicea/`、`/servicea/...` に一致しますが、`/servicea-foo` には一致しません。regex route は request path のみを対象にし、query は route match に含みません。
 - `action.upstream` は設定済み `upstreams[].name` または絶対 `http(s)` URL を指定できます。未指定時は従来の global upstream 選択を使います。`upstream_url` / `upstreams[]` を使わない構成では、有効な route と `default_route` の `action.upstream` を必ず明示してください。
+- `action.host_rewrite` は outbound の `Host` header だけを書き換えます。固定の host または `host:port` のみ指定でき、scheme や wildcard は使えません。selected upstream URL 自体は変わりません。HTTPS upstream でも、phase 2.3 時点では SNI は upstream URL 側に従い、`host_rewrite` では変わりません。
 - `action.path_rewrite.prefix` は一致した path prefix だけを書き換えます。`/servicea/... -> /...`、`/servicea/... -> /servicea/...`、`/servicea/... -> /service-a/...` を表現できます。転送時は `%2F` のような escaped suffix を保持し、追加の path cleaning は行いません。phase 2.2 時点では regex path route に `action.path_rewrite.prefix` は使えません。
 - `action.request_headers` は outbound request header の `remove`、`set`、`add` の順で適用します。`Host`、`X-Forwarded-*`、hop-by-hop headers は3操作すべてで拒否します。
 - `action.response_headers` は upstream response header の `remove`、`set`、`add` の順で適用します。`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`Trailer`、`Keep-Alive`、`TE`、`Proxy-Connection`、`Set-Cookie` は拒否します。
 - `POST /mamotama-api/proxy-rules:dry-run` は runtime と同じ route 選択・upstream 解決・path rewrite ロジックを使います。未保存の raw config を検証する場合だけ、現在の health 状態は再利用できないため、global upstream fallback はその raw config の内容に基づいて判定されます。
 - `exact` / `prefix` / `regex` の間に暗黙の specificity 優先はありません。`priority` の小さい route が常に先に評価されます。
-- フェーズ2.2時点でも未実装: host rewrite、response body rewrite、weighted/canary/mirror routing、query rewrite。
+- フェーズ2.3時点でも未実装: response body rewrite、weighted/canary/mirror routing、query rewrite。
 
 route 関連ログ:
 - `proxy_route`
 - `original_host`, `original_path`
 - `rewritten_host`, `rewritten_path`
 - `selected_route`, `selected_upstream`, `selected_upstream_url`
+
+`rewritten_host` は route 適用後の outbound `Host` header です。実際の接続先 URL は `selected_upstream_url` を見てください。
 
 旧形式設定（そのまま有効）:
 
@@ -208,7 +211,7 @@ route 関連ログ:
 }
 ```
 
-フェーズ1/2.1/2.2 route 設定例:
+フェーズ1/2.1/2.2/2.3 route 設定例:
 
 ```json
 {
@@ -228,6 +231,7 @@ route 関連ログ:
       },
       "action": {
         "upstream": "service-a",
+        "host_rewrite": "service-a.internal",
         "path_rewrite": { "prefix": "/service-a/" },
         "request_headers": {
           "set": { "X-Service": "service-a" },
@@ -248,6 +252,23 @@ route 関連ログ:
     "action": {
       "upstream": "http://fallback.internal:8080"
     }
+  }
+}
+```
+
+host rewrite 例:
+
+```json
+{
+  "name": "service-a-vhost",
+  "priority": 15,
+  "match": {
+    "hosts": ["portal.example.com"],
+    "path": { "type": "prefix", "value": "/" }
+  },
+  "action": {
+    "upstream": "https://10.0.10.12:8443",
+    "host_rewrite": "service-a.internal"
   }
 }
 ```

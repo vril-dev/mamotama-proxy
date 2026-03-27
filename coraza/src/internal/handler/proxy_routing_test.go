@@ -429,6 +429,42 @@ func TestProxyRouteRegexMatchAndPriority(t *testing.T) {
 	}
 }
 
+func TestProxyRouteHostRewrite(t *testing.T) {
+	cfg := mustValidateProxyRulesRaw(t, `{
+  "upstream_url": "http://legacy.internal:8080",
+  "routes": [
+    {
+      "name": "host-rewrite",
+      "priority": 10,
+      "match": {
+        "hosts": ["api.example.com"],
+        "path": { "type": "prefix", "value": "/servicea/" }
+      },
+      "action": {
+        "upstream": "http://route.internal:8080",
+        "host_rewrite": "service-a.internal"
+      }
+    }
+  ]
+}`)
+
+	decision := mustResolveProxyRouteDecision(t, cfg, "api.example.com", "/servicea/users")
+	if got := decision.RewrittenHost; got != "service-a.internal" {
+		t.Fatalf("rewritten_host=%s", got)
+	}
+
+	dryRun, err := proxyRouteDryRun(cfg, "api.example.com", "/servicea/users")
+	if err != nil {
+		t.Fatalf("proxyRouteDryRun: %v", err)
+	}
+	if got := dryRun.RewrittenHost; got != "service-a.internal" {
+		t.Fatalf("dry-run rewritten_host=%s", got)
+	}
+	if got := dryRun.FinalURL; got != "http://route.internal:8080/servicea/users" {
+		t.Fatalf("dry-run final_url=%s", got)
+	}
+}
+
 func TestProxyRouteHostMatchBoundaries(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -551,6 +587,38 @@ func TestValidateProxyRulesRawRejectsInvalidActionUpstream(t *testing.T) {
   ]
 }`,
 			wantErr: "does not support regex path matches",
+		},
+		{
+			name: "host rewrite must not include scheme",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": {
+        "upstream": "http://127.0.0.1:8081",
+        "host_rewrite": "https://service-a.internal"
+      }
+    }
+  ]
+}`,
+			wantErr: "host rewrite must not include scheme",
+		},
+		{
+			name: "host rewrite must not use wildcard",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": {
+        "upstream": "http://127.0.0.1:8081",
+        "host_rewrite": "*.service-a.internal"
+      }
+    }
+  ]
+}`,
+			wantErr: "host rewrite does not support wildcards",
 		},
 	}
 
@@ -710,11 +778,13 @@ func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
 	var gotSet string
 	var gotAdd string
 	var gotRemoved string
+	var gotHost string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotSet = r.Header.Get("X-Service")
 		gotAdd = r.Header.Get("X-Route")
 		gotRemoved = r.Header.Get("X-Debug")
+		gotHost = r.Host
 		w.Header().Set("X-Upstream-Replace", "origin")
 		w.Header().Add("X-Upstream-Add", "origin")
 		w.Header().Set("X-Upstream-Remove", "remove-me")
@@ -735,6 +805,7 @@ func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
         "path": { "type": "prefix", "value": "/servicea/" }
       },
       "action": {
+        "host_rewrite": "service-a.internal",
         "path_rewrite": { "prefix": "/service-a/" },
         "request_headers": {
           "set": { "X-Service": "service-a" },
@@ -783,6 +854,9 @@ func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
 	}
 	if gotRemoved != "" {
 		t.Fatalf("X-Debug=%s", gotRemoved)
+	}
+	if gotHost != "service-a.internal" {
+		t.Fatalf("Host=%s", gotHost)
 	}
 	if got := rec.Header().Get("X-Upstream-Replace"); got != "rewritten" {
 		t.Fatalf("X-Upstream-Replace=%s", got)

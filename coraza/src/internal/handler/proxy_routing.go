@@ -63,6 +63,7 @@ type ProxyRoutePathMatch struct {
 
 type ProxyRouteAction struct {
 	Upstream        string                      `json:"upstream,omitempty"`
+	HostRewrite     string                      `json:"host_rewrite,omitempty"`
 	PathRewrite     *ProxyRoutePathRewrite      `json:"path_rewrite,omitempty"`
 	RequestHeaders  *ProxyRouteHeaderOperations `json:"request_headers,omitempty"`
 	ResponseHeaders *ProxyRouteHeaderOperations `json:"response_headers,omitempty"`
@@ -156,6 +157,7 @@ func normalizeProxyDefaultRoute(in *ProxyDefaultRoute) *ProxyDefaultRoute {
 func normalizeProxyRouteAction(in ProxyRouteAction) ProxyRouteAction {
 	out := in
 	out.Upstream = strings.TrimSpace(out.Upstream)
+	out.HostRewrite = strings.TrimSpace(out.HostRewrite)
 	out.PathRewrite = normalizeProxyRoutePathRewrite(out.PathRewrite)
 	out.RequestHeaders = normalizeProxyRouteHeaderOperations(out.RequestHeaders)
 	out.ResponseHeaders = normalizeProxyRouteHeaderOperations(out.ResponseHeaders)
@@ -379,6 +381,11 @@ func validateProxyRouteAction(action ProxyRouteAction, cfg ProxyRulesConfig, nam
 			}
 		}
 	}
+	if hostRewrite := strings.TrimSpace(action.HostRewrite); hostRewrite != "" {
+		if err := validateProxyRouteOutboundHost(hostRewrite); err != nil {
+			return fmt.Errorf("%s.host_rewrite: %w", field, err)
+		}
+	}
 	if action.PathRewrite != nil {
 		if strings.TrimSpace(action.PathRewrite.Prefix) == "" {
 			return fmt.Errorf("%s.path_rewrite.prefix is required", field)
@@ -456,6 +463,27 @@ func validateProxyRouteHostPattern(host string) error {
 		if strings.TrimPrefix(host, "*.") == "" {
 			return fmt.Errorf("wildcard host suffix is required")
 		}
+	}
+	return nil
+}
+
+func validateProxyRouteOutboundHost(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return fmt.Errorf("host is required")
+	}
+	if strings.Contains(host, "://") {
+		return fmt.Errorf("host rewrite must not include scheme")
+	}
+	if strings.Contains(host, "/") {
+		return fmt.Errorf("host rewrite must not contain '/'")
+	}
+	if strings.Contains(host, "*") {
+		return fmt.Errorf("host rewrite does not support wildcards")
+	}
+	parsed, err := url.Parse("http://" + host)
+	if err != nil || parsed.Hostname() == "" {
+		return fmt.Errorf("host rewrite must be a valid host or host:port")
 	}
 	return nil
 }
@@ -655,7 +683,7 @@ func buildProxyRouteDecision(originalHost string, originalPath string, originalR
 		RouteName:           routeName,
 		OriginalHost:        originalHost,
 		OriginalPath:        originalPath,
-		RewrittenHost:       target.Host,
+		RewrittenHost:       resolveProxyRouteForwardedHost(originalHost, target.Host, action.HostRewrite),
 		RewrittenPath:       rewrittenPath,
 		RewrittenRawPath:    rewrittenRawPath,
 		SelectedUpstream:    selectedUpstream,
@@ -666,6 +694,16 @@ func buildProxyRouteDecision(originalHost string, originalPath string, originalR
 		ResponseHeaderOps:   valueOrZero(action.ResponseHeaders),
 		LogSelection:        source != proxyRouteResolutionLegacy,
 	}, nil
+}
+
+func resolveProxyRouteForwardedHost(originalHost string, targetHost string, hostRewrite string) string {
+	if next := strings.TrimSpace(hostRewrite); next != "" {
+		return next
+	}
+	if next := strings.TrimSpace(originalHost); next != "" {
+		return next
+	}
+	return strings.TrimSpace(targetHost)
 }
 
 func resolveProxyRouteTarget(cfg ProxyRulesConfig, ref string, health *upstreamHealthMonitor) (*url.URL, string, string, string, error) {

@@ -179,25 +179,28 @@ Upstream failure response behavior:
 - If `error_redirect_url` is set, `GET` / `HEAD` requests are redirected there and other methods receive plain text `503 Service Unavailable`.
 - `error_html_file` and `error_redirect_url` are mutually exclusive; choose one per protected application.
 
-Phase-1/2.1/2.2 routing in `conf/proxy.json`:
+Phase-1/2.1/2.2/2.3 routing in `conf/proxy.json`:
 - `routes[]` are evaluated in ascending `priority` order with first-match semantics.
 - Route selection order is fixed: matching `routes[]` first, then `default_route`, then legacy `upstream_url` / `upstreams[]`.
 - Host matching supports exact host and `*.example.com` wildcard host. Matching is case-insensitive, strips the request port, trims a trailing dot, and wildcard patterns match subdomains only (`example.com` itself does not match `*.example.com`).
 - Path matching supports exact path, segment-safe prefix path, and regex path. A prefix `/servicea/` matches `/servicea`, `/servicea/`, and `/servicea/...`, but not `/servicea-foo`. A regex route matches the request path only; query parameters are not part of route matching.
 - `action.upstream` can point to a configured `upstreams[].name` or an absolute `http(s)` URL. If omitted, the route uses the legacy global upstream selection. When `upstream_url` / `upstreams[]` are not set, each enabled route and `default_route` must declare `action.upstream`.
+- `action.host_rewrite` overrides the outbound `Host` header only. It must be a fixed host or `host:port`; schemes and wildcards are rejected. The selected upstream URL does not change. For HTTPS upstreams, SNI still follows the upstream URL and is not rewritten in phase 2.3.
 - `action.path_rewrite.prefix` rewrites only the matched path prefix. It is intended to cover `/servicea/... -> /...`, `/servicea/... -> /servicea/...`, and `/servicea/... -> /service-a/...`. The proxy preserves escaped suffixes such as `%2F` when forwarding, and it does not apply extra path cleaning. Regex path routes do not support `action.path_rewrite.prefix` in phase 2.2.
 - `action.request_headers` supports outbound request-header `remove`, `set`, then `add`. `Host`, `X-Forwarded-*`, and hop-by-hop headers are rejected for all three operations.
 - `action.response_headers` supports upstream response-header `remove`, `set`, then `add`. `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `Trailer`, `Keep-Alive`, `TE`, `Proxy-Connection`, and `Set-Cookie` are rejected.
 - `POST /mamotama-api/proxy-rules:dry-run` uses the same route selection, upstream resolution, and path rewrite logic as runtime proxying. When you validate unsaved raw config, dry-run cannot reuse the current runtime health state, so global upstream fallback reflects the provided config rather than live backend health.
 - If no route matches, `default_route` is used. If `default_route` is unset, the proxy falls back to legacy `upstream_url` / `upstreams[]`.
 - Route priority stays explicit even with regex routes. There is no implicit specificity ordering between `exact`, `prefix`, and `regex`; the lowest `priority` value still wins first.
-- Still out of scope after phase 2.2: host rewrite, response body rewrite, weighted/canary/mirror routing, query rewrite.
+- Still out of scope after phase 2.3: response body rewrite, weighted/canary/mirror routing, query rewrite.
 
 Route-related logs include:
 - `proxy_route`
 - `original_host`, `original_path`
 - `rewritten_host`, `rewritten_path`
 - `selected_route`, `selected_upstream`, `selected_upstream_url`
+
+`rewritten_host` is the outbound `Host` header after route processing. `selected_upstream_url` remains the actual target URL.
 
 Legacy config (still valid):
 
@@ -209,7 +212,7 @@ Legacy config (still valid):
 }
 ```
 
-Phase-1/2.1/2.2 route config example:
+Phase-1/2.1/2.2/2.3 route config example:
 
 ```json
 {
@@ -229,6 +232,7 @@ Phase-1/2.1/2.2 route config example:
       },
       "action": {
         "upstream": "service-a",
+        "host_rewrite": "service-a.internal",
         "path_rewrite": { "prefix": "/service-a/" },
         "request_headers": {
           "set": { "X-Service": "service-a" },
@@ -249,6 +253,23 @@ Phase-1/2.1/2.2 route config example:
     "action": {
       "upstream": "http://fallback.internal:8080"
     }
+  }
+}
+```
+
+Host rewrite example:
+
+```json
+{
+  "name": "service-a-vhost",
+  "priority": 15,
+  "match": {
+    "hosts": ["portal.example.com"],
+    "path": { "type": "prefix", "value": "/" }
+  },
+  "action": {
+    "upstream": "https://10.0.10.12:8443",
+    "host_rewrite": "service-a.internal"
   }
 }
 ```
