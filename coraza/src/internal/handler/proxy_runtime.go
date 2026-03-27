@@ -151,10 +151,13 @@ func InitProxyRuntime(configPath string, rollbackMax int) error {
 			if target == nil {
 				target, _ = proxyPrimaryTarget(currentProxyConfig())
 			}
-			rewriteProxyOutgoingURL(pr.Out, target, pr.In.URL.Path)
+			rewrittenPath := pr.In.URL.Path
+			rewrittenRawPath := pr.In.URL.RawPath
 			if ok {
-				rewriteProxyOutgoingURL(pr.Out, target, decision.RewrittenPath)
+				rewrittenPath = decision.RewrittenPath
+				rewrittenRawPath = decision.RewrittenRawPath
 			}
+			rewriteProxyOutgoingURL(pr.Out, target, rewrittenPath, rewrittenRawPath)
 			pr.SetXForwarded()
 			pr.Out.Host = pr.In.Host
 			if ok {
@@ -520,10 +523,6 @@ func parseProxyRulesRaw(raw string) (ProxyRulesConfig, *url.URL, proxyErrorRespo
 
 func normalizeAndValidateProxyRules(in ProxyRulesConfig) (ProxyRulesConfig, *url.URL, proxyErrorResponse, error) {
 	cfg := normalizeProxyRulesConfig(in)
-	target, err := proxyPrimaryTarget(cfg)
-	if err != nil {
-		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
-	}
 
 	if cfg.DialTimeout <= 0 {
 		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("dial_timeout must be > 0")
@@ -568,6 +567,10 @@ func normalizeAndValidateProxyRules(in ProxyRulesConfig) (ProxyRulesConfig, *url
 		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("tls_client_cert and tls_client_key require at least one https upstream")
 	}
 	if err := validateProxyRoutes(cfg); err != nil {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
+	}
+	target, err := proxyPrimaryTarget(cfg)
+	if err != nil {
 		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
 	}
 	if _, err := buildProxyTLSClientConfig(cfg); err != nil {

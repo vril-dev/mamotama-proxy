@@ -85,6 +85,7 @@ type proxyRouteDecision struct {
 	OriginalPath        string
 	RewrittenHost       string
 	RewrittenPath       string
+	RewrittenRawPath    string
 	SelectedUpstream    string
 	SelectedUpstreamURL string
 	Target              *url.URL
@@ -222,7 +223,7 @@ func normalizeProxyRouteHosts(in []string) []string {
 	out := make([]string, 0, len(in))
 	seen := map[string]struct{}{}
 	for _, raw := range in {
-		next := strings.ToLower(strings.TrimSpace(raw))
+		next := normalizeProxyHostPattern(raw)
 		if next == "" {
 			continue
 		}
@@ -259,6 +260,14 @@ func normalizeProxyRoutePrefix(v string) string {
 
 func canonicalProxyRouteHeaderName(v string) string {
 	return textproto.CanonicalMIMEHeaderKey(strings.TrimSpace(v))
+}
+
+func normalizeProxyHostPattern(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if strings.HasPrefix(v, "*.") {
+		return "*." + strings.TrimSuffix(strings.TrimPrefix(v, "*."), ".")
+	}
+	return strings.TrimSuffix(v, ".")
 }
 
 func proxyRouteEnabled(v *bool) bool {
@@ -323,7 +332,11 @@ func validateProxyRouteMatch(match ProxyRouteMatch, field string) error {
 }
 
 func validateProxyRouteAction(action ProxyRouteAction, cfg ProxyRulesConfig, namedUpstreams map[string]ProxyUpstream, nameCounts map[string]int, field string) error {
-	if upstream := strings.TrimSpace(action.Upstream); upstream != "" {
+	upstream := strings.TrimSpace(action.Upstream)
+	if upstream == "" && !proxyRulesHasLegacyUpstream(cfg) {
+		return fmt.Errorf("%s.upstream is required when upstream_url/upstreams are not set", field)
+	}
+	if upstream != "" {
 		if _, err := parseProxyUpstreamURL(field+".upstream", upstream); err != nil {
 			up, ok := namedUpstreams[upstream]
 			if !ok {
@@ -542,6 +555,7 @@ func resolveProxyRouteDecision(req *http.Request, cfg ProxyRulesConfig, health *
 	if originalPath == "" {
 		originalPath = "/"
 	}
+	originalRawPath := proxyRouteRawPath(req)
 	originalHost := strings.TrimSpace(req.Host)
 
 	for _, idx := range sortedProxyRouteIndexes(cfg.Routes) {
@@ -552,7 +566,7 @@ func resolveProxyRouteDecision(req *http.Request, cfg ProxyRulesConfig, health *
 		if !proxyRouteMatches(route.Match, originalHost, originalPath) {
 			continue
 		}
-		decision, err := buildProxyRouteDecision(originalHost, originalPath, route.Name, proxyRouteResolutionRoute, route.Match.Path, route.Action, cfg, health)
+		decision, err := buildProxyRouteDecision(originalHost, originalPath, originalRawPath, route.Name, proxyRouteResolutionRoute, route.Match.Path, route.Action, cfg, health)
 		if err != nil {
 			return proxyRouteDecision{}, err
 		}
@@ -561,7 +575,7 @@ func resolveProxyRouteDecision(req *http.Request, cfg ProxyRulesConfig, health *
 	}
 
 	if cfg.DefaultRoute != nil && proxyRouteEnabled(cfg.DefaultRoute.Enabled) {
-		decision, err := buildProxyRouteDecision(originalHost, originalPath, cfg.DefaultRoute.Name, proxyRouteResolutionDefault, nil, cfg.DefaultRoute.Action, cfg, health)
+		decision, err := buildProxyRouteDecision(originalHost, originalPath, originalRawPath, cfg.DefaultRoute.Name, proxyRouteResolutionDefault, nil, cfg.DefaultRoute.Action, cfg, health)
 		if err != nil {
 			return proxyRouteDecision{}, err
 		}
@@ -569,7 +583,7 @@ func resolveProxyRouteDecision(req *http.Request, cfg ProxyRulesConfig, health *
 		return decision, nil
 	}
 
-	decision, err := buildProxyRouteDecision(originalHost, originalPath, "legacy-upstream", proxyRouteResolutionLegacy, nil, ProxyRouteAction{}, cfg, health)
+	decision, err := buildProxyRouteDecision(originalHost, originalPath, originalRawPath, "legacy-upstream", proxyRouteResolutionLegacy, nil, ProxyRouteAction{}, cfg, health)
 	if err != nil {
 		return proxyRouteDecision{}, err
 	}
@@ -577,12 +591,13 @@ func resolveProxyRouteDecision(req *http.Request, cfg ProxyRulesConfig, health *
 	return decision, nil
 }
 
-func buildProxyRouteDecision(originalHost string, originalPath string, routeName string, source proxyRouteResolutionSource, match *ProxyRoutePathMatch, action ProxyRouteAction, cfg ProxyRulesConfig, health *upstreamHealthMonitor) (proxyRouteDecision, error) {
+func buildProxyRouteDecision(originalHost string, originalPath string, originalRawPath string, routeName string, source proxyRouteResolutionSource, match *ProxyRoutePathMatch, action ProxyRouteAction, cfg ProxyRulesConfig, health *upstreamHealthMonitor) (proxyRouteDecision, error) {
 	target, selectedUpstream, selectedURL, healthKey, err := resolveProxyRouteTarget(cfg, action.Upstream, health)
 	if err != nil {
 		return proxyRouteDecision{}, err
 	}
 	rewrittenPath := originalPath
+	rewrittenRawPath := originalRawPath
 	if action.PathRewrite != nil {
 		rewrittenPath, err = rewriteProxyRoutePath(originalPath, match, action.PathRewrite.Prefix)
 		if err != nil {
@@ -590,6 +605,15 @@ func buildProxyRouteDecision(originalHost string, originalPath string, routeName
 				health.ReleaseTarget(healthKey)
 			}
 			return proxyRouteDecision{}, err
+		}
+		if originalRawPath != "" {
+			rewrittenRawPath, err = rewriteProxyRoutePath(originalRawPath, match, action.PathRewrite.Prefix)
+			if err != nil {
+				if health != nil && healthKey != "" {
+					health.ReleaseTarget(healthKey)
+				}
+				return proxyRouteDecision{}, err
+			}
 		}
 	}
 	return proxyRouteDecision{
@@ -599,6 +623,7 @@ func buildProxyRouteDecision(originalHost string, originalPath string, routeName
 		OriginalPath:        originalPath,
 		RewrittenHost:       target.Host,
 		RewrittenPath:       rewrittenPath,
+		RewrittenRawPath:    rewrittenRawPath,
 		SelectedUpstream:    selectedUpstream,
 		SelectedUpstreamURL: selectedURL,
 		Target:              target,
@@ -691,7 +716,7 @@ func proxyRouteHostsMatch(patterns []string, host string) bool {
 }
 
 func proxyRouteHostMatches(pattern string, reqHost string) bool {
-	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	pattern = normalizeProxyHostPattern(pattern)
 	if pattern == "" || reqHost == "" {
 		return false
 	}
@@ -708,12 +733,12 @@ func normalizeProxyRequestHost(host string) string {
 		return ""
 	}
 	if parsed, err := url.Parse("http://" + host); err == nil && parsed.Hostname() != "" {
-		return strings.ToLower(parsed.Hostname())
+		return normalizeProxyHostPattern(parsed.Hostname())
 	}
 	if h, _, err := net.SplitHostPort(host); err == nil {
-		return strings.Trim(strings.ToLower(h), "[]")
+		return normalizeProxyHostPattern(strings.Trim(strings.ToLower(h), "[]"))
 	}
-	return strings.Trim(host, "[]")
+	return normalizeProxyHostPattern(strings.Trim(host, "[]"))
 }
 
 func proxyRoutePathMatchDetails(match *ProxyRoutePathMatch, reqPath string) (bool, string) {
@@ -786,19 +811,26 @@ func applyProxyRouteRequestHeaders(header http.Header, ops ProxyRouteHeaderOpera
 	}
 }
 
-func rewriteProxyOutgoingURL(out *http.Request, target *url.URL, rewrittenPath string) {
-	if out == nil || out.URL == nil || target == nil {
+func rewriteProxyOutgoingURL(out *http.Request, target *url.URL, rewrittenPath string, rewrittenRawPath string) {
+	if out == nil || out.URL == nil {
 		return
 	}
-	reqURL := &url.URL{Path: rewrittenPath, RawPath: rewrittenPath, RawQuery: out.URL.RawQuery}
+	rewriteProxyTargetURL(out.URL, target, rewrittenPath, rewrittenRawPath, out.URL.RawQuery)
+}
+
+func rewriteProxyTargetURL(out *url.URL, target *url.URL, rewrittenPath string, rewrittenRawPath string, rawQuery string) {
+	if out == nil || target == nil {
+		return
+	}
+	reqURL := &url.URL{Path: rewrittenPath, RawPath: rewrittenRawPath, RawQuery: rawQuery}
 	targetQuery := target.RawQuery
-	out.URL.Scheme = target.Scheme
-	out.URL.Host = target.Host
-	out.URL.Path, out.URL.RawPath = joinProxyURLPath(target, reqURL)
-	if targetQuery == "" || out.URL.RawQuery == "" {
-		out.URL.RawQuery = targetQuery + out.URL.RawQuery
+	out.Scheme = target.Scheme
+	out.Host = target.Host
+	out.Path, out.RawPath = joinProxyURLPath(target, reqURL)
+	if targetQuery == "" || reqURL.RawQuery == "" {
+		out.RawQuery = targetQuery + reqURL.RawQuery
 	} else {
-		out.URL.RawQuery = targetQuery + "&" + out.URL.RawQuery
+		out.RawQuery = targetQuery + "&" + reqURL.RawQuery
 	}
 }
 
@@ -836,7 +868,18 @@ func proxySingleJoiningSlash(a, b string) string {
 	}
 }
 
+func proxyRouteRawPath(req *http.Request) string {
+	if req == nil || req.URL == nil {
+		return ""
+	}
+	return req.URL.RawPath
+}
+
 func proxyRouteDryRun(cfg ProxyRulesConfig, host string, path string) (proxyRouteDryRunResult, error) {
+	return proxyRouteDryRunWithHealth(cfg, host, path, nil)
+}
+
+func proxyRouteDryRunWithHealth(cfg ProxyRulesConfig, host string, path string, health *upstreamHealthMonitor) (proxyRouteDryRunResult, error) {
 	displayHost := strings.TrimSpace(host)
 	if displayHost == "" {
 		displayHost = "route.example.invalid"
@@ -849,16 +892,9 @@ func proxyRouteDryRun(cfg ProxyRulesConfig, host string, path string) (proxyRout
 		}
 	}
 	req.Host = displayHost
-	decision, err := resolveProxyRouteDecision(req, cfg, nil)
+	decision, err := resolveProxyRouteDecision(req, cfg, health)
 	if err != nil {
 		return proxyRouteDryRunResult{}, err
-	}
-	finalURL := ""
-	if decision.Target != nil {
-		target := cloneURL(decision.Target)
-		target.Path, target.RawPath = joinProxyURLPath(target, &url.URL{Path: decision.RewrittenPath, RawPath: decision.RewrittenPath})
-		target.RawQuery = ""
-		finalURL = target.String()
 	}
 	return proxyRouteDryRunResult{
 		Source:              string(decision.Source),
@@ -869,8 +905,17 @@ func proxyRouteDryRun(cfg ProxyRulesConfig, host string, path string) (proxyRout
 		RewrittenPath:       decision.RewrittenPath,
 		SelectedUpstream:    decision.SelectedUpstream,
 		SelectedUpstreamURL: decision.SelectedUpstreamURL,
-		FinalURL:            finalURL,
+		FinalURL:            finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath),
 	}, nil
+}
+
+func finalProxyRouteURL(target *url.URL, rewrittenPath string, rewrittenRawPath string) string {
+	if target == nil {
+		return ""
+	}
+	out := cloneURL(target)
+	rewriteProxyTargetURL(out, target, rewrittenPath, rewrittenRawPath, "")
+	return out.String()
 }
 
 func valueOrZero[T any](in *T) T {

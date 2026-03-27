@@ -130,11 +130,13 @@ func DryRunProxyRulesHandler(c *gin.Context) {
 	}
 
 	var (
-		cfg ProxyRulesConfig
-		err error
+		cfg    ProxyRulesConfig
+		health *upstreamHealthMonitor
+		err    error
 	)
 	if strings.TrimSpace(in.Raw) == "" {
 		_, _, cfg, _, _ = ProxyRulesSnapshot()
+		health = proxyRuntimeHealth()
 	} else {
 		cfg, err = ValidateProxyRulesRaw(in.Raw)
 		if err != nil {
@@ -143,7 +145,7 @@ func DryRunProxyRulesHandler(c *gin.Context) {
 		}
 	}
 
-	result, err := proxyRouteDryRun(cfg, strings.TrimSpace(in.Host), path)
+	result, err := proxyRouteDryRunWithHealth(cfg, strings.TrimSpace(in.Host), path, health)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"ok": false, "messages": []string{err.Error()}, "proxy": cfg})
 		return

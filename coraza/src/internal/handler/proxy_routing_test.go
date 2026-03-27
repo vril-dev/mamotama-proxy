@@ -5,8 +5,32 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func mustValidateProxyRulesRaw(t *testing.T, raw string) ProxyRulesConfig {
+	t.Helper()
+	cfg, err := ValidateProxyRulesRaw(raw)
+	if err != nil {
+		t.Fatalf("ValidateProxyRulesRaw: %v", err)
+	}
+	return cfg
+}
+
+func mustResolveProxyRouteDecision(t *testing.T, cfg ProxyRulesConfig, host string, path string) proxyRouteDecision {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, "http://proxy.local"+path, nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	req.Host = host
+	decision, err := resolveProxyRouteDecision(req, cfg, nil)
+	if err != nil {
+		t.Fatalf("resolveProxyRouteDecision: %v", err)
+	}
+	return decision
+}
 
 func TestValidateProxyRulesRawWithRoutes(t *testing.T) {
 	raw := `{
@@ -19,7 +43,7 @@ func TestValidateProxyRulesRawWithRoutes(t *testing.T) {
       "name": "service-a",
       "priority": 10,
       "match": {
-        "hosts": ["api.example.com", "*.example.net"],
+        "hosts": ["API.EXAMPLE.COM.", "*.EXAMPLE.NET."],
         "path": { "type": "prefix", "value": "/servicea/" }
       },
       "action": {
@@ -41,15 +65,15 @@ func TestValidateProxyRulesRawWithRoutes(t *testing.T) {
   }
 }`
 
-	cfg, err := ValidateProxyRulesRaw(raw)
-	if err != nil {
-		t.Fatalf("ValidateProxyRulesRaw(routes): %v", err)
-	}
+	cfg := mustValidateProxyRulesRaw(t, raw)
 	if len(cfg.Routes) != 1 {
 		t.Fatalf("routes=%d", len(cfg.Routes))
 	}
 	if cfg.Routes[0].Match.Path == nil || cfg.Routes[0].Match.Path.Value != "/servicea" {
 		t.Fatalf("unexpected normalized path match: %#v", cfg.Routes[0].Match.Path)
+	}
+	if cfg.Routes[0].Match.Hosts[0] != "api.example.com" || cfg.Routes[0].Match.Hosts[1] != "*.example.net" {
+		t.Fatalf("unexpected normalized hosts: %#v", cfg.Routes[0].Match.Hosts)
 	}
 	if cfg.Routes[0].Action.PathRewrite == nil || cfg.Routes[0].Action.PathRewrite.Prefix != "/service-a" {
 		t.Fatalf("unexpected normalized path rewrite: %#v", cfg.Routes[0].Action.PathRewrite)
@@ -59,33 +83,9 @@ func TestValidateProxyRulesRawWithRoutes(t *testing.T) {
 	}
 }
 
-func TestValidateProxyRulesRawRejectsInvalidRouteHeader(t *testing.T) {
-	raw := `{
-  "upstream_url": "http://127.0.0.1:8080",
-  "routes": [
-    {
-      "priority": 10,
-      "match": { "path": { "type": "prefix", "value": "/servicea" } },
-      "action": {
-        "request_headers": {
-          "set": { "Host": "malicious.example" }
-        }
-      }
-    }
-  ]
-}`
-
-	if _, err := ValidateProxyRulesRaw(raw); err == nil {
-		t.Fatal("expected restricted header validation error")
-	}
-}
-
-func TestProxyRouteDryRun(t *testing.T) {
-	raw := `{
+func TestProxyRouteResolutionOrderAndDryRun(t *testing.T) {
+	routedRaw := `{
   "upstream_url": "http://legacy.internal:8080",
-  "upstreams": [
-    { "name": "svc-a", "url": "http://sv3.internal:8080", "enabled": true }
-  ],
   "routes": [
     {
       "name": "service-a",
@@ -95,42 +95,408 @@ func TestProxyRouteDryRun(t *testing.T) {
         "path": { "type": "prefix", "value": "/servicea/" }
       },
       "action": {
-        "upstream": "svc-a",
-        "path_rewrite": { "prefix": "/service-a/" }
+        "upstream": "http://route.internal:8080",
+        "path_rewrite": { "prefix": "/" }
       }
     }
   ],
   "default_route": {
     "name": "fallback",
     "action": {
-      "upstream": "http://fallback.internal:8080"
+      "upstream": "http://default.internal:8080"
     }
   }
 }`
+	legacyRaw := `{
+  "upstream_url": "http://legacy.internal:8080",
+  "routes": [
+    {
+      "name": "service-a",
+      "priority": 10,
+      "match": {
+        "hosts": ["api.example.com"],
+        "path": { "type": "prefix", "value": "/servicea/" }
+      },
+      "action": {
+        "upstream": "http://route.internal:8080",
+        "path_rewrite": { "prefix": "/" }
+      }
+    }
+  ]
+}`
 
-	cfg, err := ValidateProxyRulesRaw(raw)
-	if err != nil {
-		t.Fatalf("ValidateProxyRulesRaw: %v", err)
+	tests := []struct {
+		name              string
+		cfg               ProxyRulesConfig
+		host              string
+		path              string
+		wantSource        string
+		wantRoute         string
+		wantRewrittenPath string
+		wantUpstream      string
+		wantUpstreamURL   string
+		wantFinalURL      string
+	}{
+		{
+			name:              "route wins over default and legacy",
+			cfg:               mustValidateProxyRulesRaw(t, routedRaw),
+			host:              "api.example.com",
+			path:              "/servicea/users",
+			wantSource:        "route",
+			wantRoute:         "service-a",
+			wantRewrittenPath: "/users",
+			wantUpstream:      "http://route.internal:8080",
+			wantUpstreamURL:   "http://route.internal:8080",
+			wantFinalURL:      "http://route.internal:8080/users",
+		},
+		{
+			name:              "default route wins when no explicit route matches",
+			cfg:               mustValidateProxyRulesRaw(t, routedRaw),
+			host:              "www.example.com",
+			path:              "/other",
+			wantSource:        "default_route",
+			wantRoute:         "fallback",
+			wantRewrittenPath: "/other",
+			wantUpstream:      "http://default.internal:8080",
+			wantUpstreamURL:   "http://default.internal:8080",
+			wantFinalURL:      "http://default.internal:8080/other",
+		},
+		{
+			name:              "legacy fallback is used when default route is absent",
+			cfg:               mustValidateProxyRulesRaw(t, legacyRaw),
+			host:              "www.example.com",
+			path:              "/other",
+			wantSource:        "legacy_upstream",
+			wantRoute:         "legacy-upstream",
+			wantRewrittenPath: "/other",
+			wantUpstream:      "primary",
+			wantUpstreamURL:   "http://legacy.internal:8080",
+			wantFinalURL:      "http://legacy.internal:8080/other",
+		},
 	}
 
-	result, err := proxyRouteDryRun(cfg, "api.example.com", "/servicea/users")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision := mustResolveProxyRouteDecision(t, tt.cfg, tt.host, tt.path)
+			dryRun, err := proxyRouteDryRun(tt.cfg, tt.host, tt.path)
+			if err != nil {
+				t.Fatalf("proxyRouteDryRun: %v", err)
+			}
+
+			if got := string(decision.Source); got != tt.wantSource {
+				t.Fatalf("decision source=%s want=%s", got, tt.wantSource)
+			}
+			if got := dryRun.Source; got != tt.wantSource {
+				t.Fatalf("dry-run source=%s want=%s", got, tt.wantSource)
+			}
+			if got := decision.RouteName; got != tt.wantRoute {
+				t.Fatalf("decision route=%s want=%s", got, tt.wantRoute)
+			}
+			if got := dryRun.RouteName; got != tt.wantRoute {
+				t.Fatalf("dry-run route=%s want=%s", got, tt.wantRoute)
+			}
+			if got := decision.RewrittenPath; got != tt.wantRewrittenPath {
+				t.Fatalf("decision rewritten_path=%s want=%s", got, tt.wantRewrittenPath)
+			}
+			if got := dryRun.RewrittenPath; got != tt.wantRewrittenPath {
+				t.Fatalf("dry-run rewritten_path=%s want=%s", got, tt.wantRewrittenPath)
+			}
+			if got := decision.SelectedUpstream; got != tt.wantUpstream {
+				t.Fatalf("decision selected_upstream=%s want=%s", got, tt.wantUpstream)
+			}
+			if got := dryRun.SelectedUpstream; got != tt.wantUpstream {
+				t.Fatalf("dry-run selected_upstream=%s want=%s", got, tt.wantUpstream)
+			}
+			if got := decision.SelectedUpstreamURL; got != tt.wantUpstreamURL {
+				t.Fatalf("decision selected_upstream_url=%s want=%s", got, tt.wantUpstreamURL)
+			}
+			if got := dryRun.SelectedUpstreamURL; got != tt.wantUpstreamURL {
+				t.Fatalf("dry-run selected_upstream_url=%s want=%s", got, tt.wantUpstreamURL)
+			}
+			if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath); got != tt.wantFinalURL {
+				t.Fatalf("decision final_url=%s want=%s", got, tt.wantFinalURL)
+			}
+			if got := dryRun.FinalURL; got != tt.wantFinalURL {
+				t.Fatalf("dry-run final_url=%s want=%s", got, tt.wantFinalURL)
+			}
+		})
+	}
+}
+
+func TestProxyRoutePrefixRewriteBoundaries(t *testing.T) {
+	match := normalizeProxyRoutePathMatch(&ProxyRoutePathMatch{Type: "prefix", Value: "/servicea/"})
+	tests := []struct {
+		name          string
+		originalPath  string
+		rewritePrefix string
+		wantPath      string
+	}{
+		{name: "prefix root no trailing slash", originalPath: "/servicea", rewritePrefix: "/", wantPath: "/"},
+		{name: "prefix root trailing slash", originalPath: "/servicea/", rewritePrefix: "/", wantPath: "/"},
+		{name: "prefix nested path to root", originalPath: "/servicea/foo", rewritePrefix: "/", wantPath: "/foo"},
+		{name: "prefix preserved", originalPath: "/servicea/foo", rewritePrefix: "/servicea/", wantPath: "/servicea/foo"},
+		{name: "prefix renamed", originalPath: "/servicea/foo", rewritePrefix: "/service-a/", wantPath: "/service-a/foo"},
+		{name: "prefix renamed no double slash", originalPath: "/servicea/", rewritePrefix: "/service-a/", wantPath: "/service-a/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := rewriteProxyRoutePath(tt.originalPath, match, tt.rewritePrefix)
+			if err != nil {
+				t.Fatalf("rewriteProxyRoutePath: %v", err)
+			}
+			if got != tt.wantPath {
+				t.Fatalf("rewritten_path=%s want=%s", got, tt.wantPath)
+			}
+			if strings.Contains(got, "//") && got != "/" {
+				t.Fatalf("rewritten_path contains double slash: %s", got)
+			}
+		})
+	}
+}
+
+func TestProxyRoutePreservesEncodedSuffixOnRewrite(t *testing.T) {
+	cfg := mustValidateProxyRulesRaw(t, `{
+  "upstream_url": "http://legacy.internal:8080",
+  "routes": [
+    {
+      "name": "service-a",
+      "priority": 10,
+      "match": {
+        "hosts": ["api.example.com"],
+        "path": { "type": "prefix", "value": "/servicea/" }
+      },
+      "action": {
+        "upstream": "http://route.internal:8080",
+        "path_rewrite": { "prefix": "/service-a/" }
+      }
+    }
+  ]
+}`)
+
+	req, err := http.NewRequest(http.MethodGet, "http://proxy.local/servicea/%2Fetc", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	req.Host = "api.example.com"
+
+	decision, err := resolveProxyRouteDecision(req, cfg, nil)
+	if err != nil {
+		t.Fatalf("resolveProxyRouteDecision: %v", err)
+	}
+	if decision.RewrittenPath != "/service-a//etc" {
+		t.Fatalf("rewritten_path=%s", decision.RewrittenPath)
+	}
+	if decision.RewrittenRawPath != "/service-a/%2Fetc" {
+		t.Fatalf("rewritten_raw_path=%s", decision.RewrittenRawPath)
+	}
+	if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath); got != "http://route.internal:8080/service-a/%2Fetc" {
+		t.Fatalf("final_url=%s", got)
+	}
+}
+
+func TestProxyRouteHostMatchBoundaries(t *testing.T) {
+	tests := []struct {
+		name     string
+		patterns []string
+		host     string
+		want     bool
+	}{
+		{name: "exact host match", patterns: []string{"api.example.com"}, host: "api.example.com", want: true},
+		{name: "exact host strips port, case, and trailing dot", patterns: []string{"api.example.com"}, host: "API.EXAMPLE.COM.:443", want: true},
+		{name: "wildcard does not match bare suffix", patterns: []string{"*.example.com"}, host: "example.com", want: false},
+		{name: "wildcard matches single label", patterns: []string{"*.example.com"}, host: "a.example.com", want: true},
+		{name: "wildcard matches deeper labels", patterns: []string{"*.example.com"}, host: "a.b.example.com", want: true},
+		{name: "wildcard strips port and trailing dot", patterns: []string{"*.example.com."}, host: "A.B.EXAMPLE.COM.:8443", want: true},
+		{name: "empty host does not match", patterns: []string{"api.example.com"}, host: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := proxyRouteHostsMatch(normalizeProxyRouteHosts(tt.patterns), tt.host)
+			if got != tt.want {
+				t.Fatalf("matched=%v want=%v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateProxyRulesRawRejectsInvalidActionUpstream(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr string
+	}{
+		{
+			name: "unknown upstream name",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": { "upstream": "missing-upstream" }
+    }
+  ]
+}`,
+			wantErr: "must be an absolute http(s) URL or a configured upstream name",
+		},
+		{
+			name: "unsupported upstream scheme",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": { "upstream": "ftp://127.0.0.1:21" }
+    }
+  ]
+}`,
+			wantErr: "must be an absolute http(s) URL or a configured upstream name",
+		},
+		{
+			name: "relative upstream URL",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": { "upstream": "/relative" }
+    }
+  ]
+}`,
+			wantErr: "must be an absolute http(s) URL or a configured upstream name",
+		},
+		{
+			name: "explicit upstream required without legacy fallback",
+			raw: `{
+  "routes": [
+    {
+      "priority": 10,
+      "match": {
+        "path": { "type": "prefix", "value": "/" }
+      },
+      "action": {}
+    }
+  ]
+}`,
+			wantErr: "routes[0].action.upstream is required when upstream_url/upstreams are not set",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ValidateProxyRulesRaw(tt.raw)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error=%q want substring=%q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateProxyRulesRawRejectsRestrictedRouteHeaders(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr string
+	}{
+		{
+			name: "reject host set",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": {
+        "request_headers": {
+          "set": { "Host": "malicious.example" }
+        }
+      }
+    }
+  ]
+}`,
+			wantErr: "header is not allowed in route request_headers",
+		},
+		{
+			name: "reject x-forwarded add",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": {
+        "request_headers": {
+          "add": { "x-forwarded-for": "1.2.3.4" }
+        }
+      }
+    }
+  ]
+}`,
+			wantErr: "header is not allowed in route request_headers",
+		},
+		{
+			name: "reject hop-by-hop remove",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": {
+        "request_headers": {
+          "remove": ["cOnNection"]
+        }
+      }
+    }
+  ]
+}`,
+			wantErr: "header is not allowed in route request_headers",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ValidateProxyRulesRaw(tt.raw)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error=%q want substring=%q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLegacyProxyRouteCompatibilityWithoutRoutes(t *testing.T) {
+	cfg := mustValidateProxyRulesRaw(t, `{
+  "upstream_url": "http://legacy.internal:8080",
+  "load_balancing_strategy": "round_robin"
+}`)
+
+	decision := mustResolveProxyRouteDecision(t, cfg, "api.example.com", "/healthz")
+	if got := string(decision.Source); got != "legacy_upstream" {
+		t.Fatalf("source=%s", got)
+	}
+	if decision.RouteName != "legacy-upstream" {
+		t.Fatalf("route_name=%s", decision.RouteName)
+	}
+	if decision.SelectedUpstream != "primary" {
+		t.Fatalf("selected_upstream=%s", decision.SelectedUpstream)
+	}
+	if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath); got != "http://legacy.internal:8080/healthz" {
+		t.Fatalf("final_url=%s", got)
+	}
+
+	dryRun, err := proxyRouteDryRun(cfg, "api.example.com", "/healthz")
 	if err != nil {
 		t.Fatalf("proxyRouteDryRun: %v", err)
 	}
-	if result.RouteName != "service-a" {
-		t.Fatalf("route=%s", result.RouteName)
+	if dryRun.Source != "legacy_upstream" {
+		t.Fatalf("dry-run source=%s", dryRun.Source)
 	}
-	if result.Source != "route" {
-		t.Fatalf("source=%s", result.Source)
-	}
-	if result.RewrittenPath != "/service-a/users" {
-		t.Fatalf("rewritten_path=%s", result.RewrittenPath)
-	}
-	if result.SelectedUpstream != "svc-a" {
-		t.Fatalf("selected_upstream=%s", result.SelectedUpstream)
-	}
-	if result.FinalURL != "http://sv3.internal:8080/service-a/users" {
-		t.Fatalf("final_url=%s", result.FinalURL)
+	if dryRun.FinalURL != "http://legacy.internal:8080/healthz" {
+		t.Fatalf("dry-run final_url=%s", dryRun.FinalURL)
 	}
 }
 
