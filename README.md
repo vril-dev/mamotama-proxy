@@ -809,6 +809,38 @@ Evaluation happens before bot defense, semantic scoring, and WAF, and emits `ip_
 - `fail_open=true` keeps traffic flowing when every remote feed refresh fails
 - watch `last_refresh_at`, `last_refresh_error`, `effective_allow_count`, and `effective_block_count` in `/mamotama-api/status`
 
+#### Feed File Format
+
+Feed files (local or remote) use a plain-text format:
+
+```text
+# Lines starting with # are comments and are ignored
+1.2.3.0/24
+2001:db8::/32
+10.0.0.1
+```
+
+- One entry per line: IPv4 address, IPv4 CIDR, IPv6 address, or IPv6 CIDR.
+- Lines starting with `#` are treated as comments.
+- Blank lines are ignored.
+- Lines that do not parse as a valid IP or CIDR are skipped with a warning log; they do not abort the feed load.
+- Feed entries are merged with the inline `blocklist` / `allowlist` at load time. Inline `allowlist` entries always take precedence over feed-sourced block entries.
+
+Example `conf/ip-reputation.conf`:
+```json
+{
+  "enabled": true,
+  "fail_open": true,
+  "refresh_interval_seconds": 3600,
+  "feed_urls": [
+    "file:///etc/mamotama/feeds/custom-blocklist.txt",
+    "https://example.invalid/feeds/threat-intel.txt"
+  ],
+  "allowlist": ["203.0.113.0/24"],
+  "blocklist": ["198.51.100.42"]
+}
+```
+
 ### WebSocket Scope
 
 - the HTTP upgrade handshake is still inspected like normal request traffic
@@ -822,11 +854,62 @@ Evaluation happens before bot defense, semantic scoring, and WAF, and emits `ip_
 - `admin.trust_forwarded_for=true` is only honored when the direct peer is already inside `admin.trusted_cidrs`
 - `admin.rate_limit` applies dedicated throttling to admin API and UI traffic; keep it off until the reverse-proxy path is understood
 
+#### `admin.rate_limit` JSON Parameter Quick Reference
+
+| Parameter | Example | Effect |
+| --- | --- | --- |
+| `enabled` | `true` / `false` | Enables/disables admin rate limiting. Default is `false`. |
+| `limit` | `60` | Maximum requests allowed per window. |
+| `burst` | `10` | Additional burst allowance above `limit`. |
+| `window_seconds` | `60` | Sliding window size in seconds. |
+| `status` | `429` | HTTP status returned when the limit is exceeded. |
+
+Example:
+```json
+"admin": {
+  "rate_limit": {
+    "enabled": true,
+    "limit": 60,
+    "burst": 10,
+    "window_seconds": 60,
+    "status": 429
+  }
+}
+```
+
+- Key is always the source IP of the direct connection (or `X-Forwarded-For` tip when `admin.trust_forwarded_for=true` and the peer is inside `admin.trusted_cidrs`).
+- Start with `enabled=false` and raise `limit` after confirming the reverse-proxy forwarding path is correct. Setting this too low before the path is understood will lock out the admin UI.
+
 ### Observability
 
 - `/mamotama-api/metrics` now exposes TLS and upstream HA gauges in addition to rate-limit / semantic / notification counters
 - file backend rotation for `waf-events.ndjson` is controlled by `storage.file_rotate_bytes`, `storage.file_max_bytes`, and `storage.file_retention_days`
 - optional OTLP tracing is available under `observability.tracing`
+
+#### OTLP Tracing Configuration
+
+```json
+"observability": {
+  "tracing": {
+    "enabled": true,
+    "endpoint": "http://jaeger:4318/v1/traces",
+    "service_name": "mamotama",
+    "sampling_ratio": 0.1,
+    "timeout_seconds": 5
+  }
+}
+```
+
+| Field | Example | Effect |
+| --- | --- | --- |
+| `enabled` | `true` / `false` | Enables/disables OTLP span export. Default is `false`. |
+| `endpoint` | `"http://jaeger:4318/v1/traces"` | OTLP HTTP exporter endpoint. Use port `4317` for gRPC. |
+| `service_name` | `"mamotama"` | Service name attached to all spans. |
+| `sampling_ratio` | `0.1` | Fraction of traces sampled (`0.0`–`1.0`). Use `1.0` for debug, `0.01`–`0.1` for production. |
+| `timeout_seconds` | `5` | Export timeout per batch. |
+
+Compatible backends: Jaeger (v1.35+), Grafana Tempo, OpenTelemetry Collector.
+The OTLP HTTP exporter is used by default. Point `endpoint` at your collector or backend ingest URL.
 - sample assets:
   - [docs/operations/prometheus-scrape.example.yml](docs/operations/prometheus-scrape.example.yml)
   - [docs/operations/grafana-dashboard.json](docs/operations/grafana-dashboard.json)
