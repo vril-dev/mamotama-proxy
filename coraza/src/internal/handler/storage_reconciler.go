@@ -25,6 +25,7 @@ func SyncAllStorageFromDB() error {
 		{name: "bypass", run: SyncBypassStorage},
 		{name: "country-block", run: SyncCountryBlockStorage},
 		{name: "rate-limit", run: SyncRateLimitStorage},
+		{name: "notifications", run: SyncNotificationStorage},
 		{name: "bot-defense", run: SyncBotDefenseStorage},
 		{name: "semantic", run: SyncSemanticStorage},
 		{name: "cache-rules", run: SyncCacheRulesStorage},
