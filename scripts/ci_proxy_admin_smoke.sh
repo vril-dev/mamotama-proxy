@@ -45,6 +45,16 @@ if [[ "${probe_code}" != "200" ]]; then
   exit 1
 fi
 
+dry_run_body="$(jq -n --arg raw "${raw}" --arg host "example.test" --arg path "/healthz" '{raw: $raw, host: $host, path: $path}')"
+dry_run_code="$(curl -sS -o /tmp/proxy_dry_run_resp.json -w "%{http_code}" \
+  -H "${PROXY_AUTH_HEADER}" -H "Content-Type: application/json" \
+  -X POST --data "${dry_run_body}" "${PROXY_API_URL}/proxy-rules:dry-run")"
+if [[ "${dry_run_code}" != "200" ]]; then
+  echo "[proxy-smoke][ERROR] dry-run failed: ${dry_run_code}" >&2
+  cat /tmp/proxy_dry_run_resp.json >&2 || true
+  exit 1
+fi
+
 updated_raw="$(jq '.flush_interval_ms = ((.flush_interval_ms // 0) + 10) % 1000' <<<"${raw}")"
 put_body="$(jq -n --arg raw "${updated_raw}" '{raw: $raw}')"
 put_code="$(curl -sS -o /tmp/proxy_put_resp.json -w "%{http_code}" \
