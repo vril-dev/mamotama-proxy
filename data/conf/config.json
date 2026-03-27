@@ -7,7 +7,15 @@
     "idle_timeout_sec": 120,
     "max_header_bytes": 1048576,
     "max_concurrent_requests": 0,
-    "max_concurrent_proxy_requests": 0
+    "max_concurrent_proxy_requests": 0,
+    "tls": {
+      "enabled": false,
+      "cert_file": "",
+      "key_file": "",
+      "min_version": "tls1.2",
+      "redirect_http": false,
+      "http_redirect_addr": ""
+    }
   },
   "runtime": {
     "gomaxprocs": 0,
