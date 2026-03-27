@@ -10,5 +10,10 @@
     "outDir": ".tmp-test",
     "rootDir": "."
   },
-  "include": ["src/lib/api.ts", "src/lib/api.test.ts"]
+  "include": [
+    "src/lib/api.ts",
+    "src/lib/api.test.ts",
+    "src/lib/proxyRulesEditor.ts",
+    "src/lib/proxyRulesEditor.test.ts"
+  ]
 }

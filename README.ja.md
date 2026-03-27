@@ -172,7 +172,7 @@ sudo sysctl --system
 | `/bot-defense` | Bot defense設定の閲覧・編集（bot-defense.conf を直接操作） |
 | `/semantic` | Semantic Security設定の閲覧・編集（semantic.conf を直接操作） |
 | `/cache-rules` | Cache Rules の可視化・編集（cache.conf の表編集／Raw編集、Validate/Save対応） |
-| `/proxy-rules` | 上流URL・Transport設定・route・保守ページ/redirect設定の検証/プローブ/dry-run/更新/ロールバック（`conf/proxy.json`） |
+| `/proxy-rules` | upstreams/routes/default route の構造化編集と、`conf/proxy.json` 全体の raw 編集・検証・プローブ・dry-run・更新・ロールバック |
 
 上流障害時レスポンスの挙動:
 - `error_html_file` と `error_redirect_url` の両方が未設定なら、proxy は既定の `502 Bad Gateway` を返し、ブラウザでは簡素な標準エラーページが表示されます。
@@ -346,6 +346,7 @@ curl -sS \
 
 #### Proxy Rules
 ![Proxy Rules](docs/images/ui-samples/12-proxy-rules.png)
+upstreams、routes、default route、dry-run は構造化UIで扱えます。transport など低レベル項目は引き続き raw editor で調整できます。
 
 #### Settings
 ![Settings](docs/images/ui-samples/13-settings.png)

@@ -171,7 +171,7 @@ You can still edit source under `web/mamotama-admin/` and rebuild assets for emb
 | `/bot-defense` | View/edit bot-defense config directly (`bot-defense.conf`) |
 | `/semantic` | View/edit semantic security config directly (`semantic.conf`) |
 | `/cache-rules` | Visual + raw editing for cache rules (`cache.conf`), with Validate/Save |
-| `/proxy-rules` | View/validate/probe/dry-run/update/rollback upstream + transport + route + maintenance/redirect fallback tuning (`conf/proxy.json`) |
+| `/proxy-rules` | Structured + raw editing for upstreams/routes/default route, plus validate/probe/dry-run/update/rollback for full `conf/proxy.json` |
 
 Upstream failure response behavior:
 - If `error_html_file` and `error_redirect_url` are both unset, the proxy returns the default `502 Bad Gateway` response and the browser shows a simple built-in error page.
@@ -347,6 +347,7 @@ curl -sS \
 
 #### Proxy Rules
 ![Proxy Rules](docs/images/ui-samples/12-proxy-rules.png)
+Structured route editing is available for upstreams, routes, default route, and dry-run checks, while the raw editor remains available for transport and low-level proxy fields.
 
 #### Settings
 ![Settings](docs/images/ui-samples/13-settings.png)
