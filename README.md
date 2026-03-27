@@ -62,7 +62,7 @@ Main blocks in `config.json`:
 
 | Block | Purpose |
 | --- | --- |
-| `server` | listen address, timeout values, max header size, concurrency caps |
+| `server` | listen address, timeout values, max header size, concurrency caps, optional built-in TLS listener |
 | `runtime` | Go runtime caps (`gomaxprocs`, `memory_limit_mb`) |
 | `admin` | API/UI base paths, API keys, CORS, strict/insecure toggles |
 | `paths` | file locations for rules/bypass/country/rate/bot/semantic/CRS/proxy |
@@ -77,6 +77,29 @@ Container startup uses only:
 | --- | --- | --- |
 | `WAF_CONFIG_FILE` | `conf/config.json` | App config JSON path loaded at startup. |
 | `WAF_LISTEN_PORT` | `9090` | Compose port/healthcheck/gotestwaf target helper. Keep aligned with `server.listen_addr` in config JSON. |
+
+#### Optional Built-in TLS Termination
+
+`[proxy]` can terminate HTTPS directly from `data/conf/config.json`. This is config-only; there is no admin UI editor for listener certificates.
+
+```json
+"server": {
+  "listen_addr": ":9443",
+  "tls": {
+    "enabled": true,
+    "cert_file": "/etc/mamotama/tls/fullchain.pem",
+    "key_file": "/etc/mamotama/tls/privkey.pem",
+    "min_version": "tls1.2",
+    "redirect_http": true,
+    "http_redirect_addr": ":9080"
+  }
+}
+```
+
+- `server.tls.enabled=false` is the default.
+- Initial scope is manual certificate files only (`cert_file` / `key_file`). ACME auto-issuance is not included.
+- `server.tls.redirect_http=true` starts a second plain HTTP listener that permanently redirects to HTTPS.
+- `server.tls.http_redirect_addr` must be different from `server.listen_addr`.
 
 ### Admin UI
 
@@ -476,6 +499,14 @@ This keeps external provider payload small by sending one selected event at a ti
 | PUT | `/mamotama-api/cache-rules` | Save `cache.conf` (`If-Match` optimistic lock via `ETag`) |
 
 If logs or rules are missing, API returns `500` with `{"error":"..."}`.
+
+`GET /mamotama-api/status` also includes built-in listener TLS fields:
+- `server_tls_enabled`
+- `server_tls_cert_file`
+- `server_tls_key_configured`
+- `server_tls_min_version`
+- `server_tls_redirect_http`
+- `server_tls_http_redirect_addr`
 
 ---
 

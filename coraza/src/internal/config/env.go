@@ -11,38 +11,44 @@ import (
 )
 
 var (
-	ConfigFile               string
-	ProxyConfigFile          string
-	UIBasePath               string
-	ProxyRollbackMax         int
-	ListenAddr               string
-	ServerReadTimeout        time.Duration
-	ServerReadHeaderTimeout  time.Duration
-	ServerWriteTimeout       time.Duration
-	ServerIdleTimeout        time.Duration
-	ServerMaxHeaderBytes     int
-	ServerMaxConcurrentReqs  int
-	ServerMaxConcurrentProxy int
-	RuntimeGOMAXPROCS        int
-	RuntimeMemoryLimitMB     int
-	RulesFile                string
-	BypassFile               string
-	CountryBlockFile         string
-	RateLimitFile            string
-	BotDefenseFile           string
-	SemanticFile             string
-	NotificationFile         string
-	LogFile                  string
-	StrictOverride           bool
-	APIBasePath              string
-	APIKeyPrimary            string
-	APIKeySecondary          string
-	APIAuthDisable           bool
-	APICORSOrigins           []string
-	CRSEnable                bool
-	CRSSetupFile             string
-	CRSRulesDir              string
-	CRSDisabledFile          string
+	ConfigFile                string
+	ProxyConfigFile           string
+	UIBasePath                string
+	ProxyRollbackMax          int
+	ListenAddr                string
+	ServerReadTimeout         time.Duration
+	ServerReadHeaderTimeout   time.Duration
+	ServerWriteTimeout        time.Duration
+	ServerIdleTimeout         time.Duration
+	ServerMaxHeaderBytes      int
+	ServerMaxConcurrentReqs   int
+	ServerMaxConcurrentProxy  int
+	ServerTLSEnabled          bool
+	ServerTLSCertFile         string
+	ServerTLSKeyFile          string
+	ServerTLSMinVersion       string
+	ServerTLSRedirectHTTP     bool
+	ServerTLSHTTPRedirectAddr string
+	RuntimeGOMAXPROCS         int
+	RuntimeMemoryLimitMB      int
+	RulesFile                 string
+	BypassFile                string
+	CountryBlockFile          string
+	RateLimitFile             string
+	BotDefenseFile            string
+	SemanticFile              string
+	NotificationFile          string
+	LogFile                   string
+	StrictOverride            bool
+	APIBasePath               string
+	APIKeyPrimary             string
+	APIKeySecondary           string
+	APIAuthDisable            bool
+	APICORSOrigins            []string
+	CRSEnable                 bool
+	CRSSetupFile              string
+	CRSRulesDir               string
+	CRSDisabledFile           string
 
 	AllowInsecureDefaults bool
 
@@ -98,6 +104,15 @@ func applyAppConfig(cfg appConfigFile) {
 	ServerMaxHeaderBytes = parseServerMaxHeaderBytes(strconv.Itoa(cfg.Server.MaxHeaderBytes))
 	ServerMaxConcurrentReqs = parseServerConcurrency(strconv.Itoa(cfg.Server.MaxConcurrentRequests))
 	ServerMaxConcurrentProxy = parseServerConcurrency(strconv.Itoa(cfg.Server.MaxConcurrentProxyRequests))
+	ServerTLSEnabled = cfg.Server.TLS.Enabled
+	ServerTLSCertFile = strings.TrimSpace(cfg.Server.TLS.CertFile)
+	ServerTLSKeyFile = strings.TrimSpace(cfg.Server.TLS.KeyFile)
+	ServerTLSMinVersion = normalizeServerTLSMinVersion(cfg.Server.TLS.MinVersion)
+	ServerTLSRedirectHTTP = cfg.Server.TLS.RedirectHTTP
+	ServerTLSHTTPRedirectAddr = strings.TrimSpace(cfg.Server.TLS.HTTPRedirectAddr)
+	if ServerTLSHTTPRedirectAddr != "" {
+		ServerTLSHTTPRedirectAddr = parseListenAddr(ServerTLSHTTPRedirectAddr)
+	}
 	RuntimeGOMAXPROCS = parseRuntimeGOMAXPROCS(strconv.Itoa(cfg.Runtime.GOMAXPROCS))
 	RuntimeMemoryLimitMB = parseRuntimeMemoryLimitMB(strconv.Itoa(cfg.Runtime.MemoryLimitMB))
 
