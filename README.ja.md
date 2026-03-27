@@ -142,6 +142,7 @@ sudo sysctl --system
 | `/bypass` | バイパス設定の閲覧・編集（waf.bypassを直接操作） |
 | `/country-block` | 国別ブロック設定の閲覧・編集（country-block.conf を直接操作） |
 | `/rate-limit` | レート制限設定の閲覧・編集（rate-limit.conf を直接操作） |
+| `/notifications` | 集計通知設定の閲覧・編集（`conf/notifications.conf` を直接操作） |
 | `/bot-defense` | Bot defense設定の閲覧・編集（bot-defense.conf を直接操作） |
 | `/semantic` | Semantic Security設定の閲覧・編集（semantic.conf を直接操作） |
 | `/cache-rules` | Cache Rules の可視化・編集（cache.conf の表編集／Raw編集、Validate/Save対応） |
@@ -172,6 +173,9 @@ sudo sysctl --system
 
 #### Rate Limit
 ![Rate Limit](docs/images/ui-samples/07-rate-limit.png)
+
+#### Notifications
+![Notifications](docs/images/ui-samples/14-notifications.png)
 
 #### Cache Rules
 ![Cache Rules](docs/images/ui-samples/11-cache-rules.png)
