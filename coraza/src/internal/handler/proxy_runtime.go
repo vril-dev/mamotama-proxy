@@ -159,9 +159,13 @@ func InitProxyRuntime(configPath string, rollbackMax int) error {
 			}
 			rewriteProxyOutgoingURL(pr.Out, target, rewrittenPath, rewrittenRawPath)
 			pr.SetXForwarded()
-			pr.Out.Host = pr.In.Host
+			outboundHost := pr.In.Host
+			if ok && strings.TrimSpace(decision.RewrittenHost) != "" {
+				outboundHost = decision.RewrittenHost
+			}
+			pr.Out.Host = outboundHost
 			if ok {
-				applyProxyRouteRequestHeaders(pr.Out.Header, decision.HeaderOps)
+				applyProxyRouteHeaders(pr.Out.Header, decision.RequestHeaderOps)
 				if decision.HealthKey != "" {
 					pr.Out = pr.Out.WithContext(context.WithValue(pr.Out.Context(), ctxKeySelectedUpstream, decision.HealthKey))
 				}

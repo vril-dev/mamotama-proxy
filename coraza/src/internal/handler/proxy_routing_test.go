@@ -53,6 +53,10 @@ func TestValidateProxyRulesRawWithRoutes(t *testing.T) {
           "set": { "X-Service": "service-a" },
           "add": { "X-Route": "service-a" },
           "remove": ["X-Debug"]
+        },
+        "response_headers": {
+          "set": { "x-frame-options": "DENY" },
+          "remove": ["x-powered-by"]
         }
       }
     }
@@ -77,6 +81,9 @@ func TestValidateProxyRulesRawWithRoutes(t *testing.T) {
 	}
 	if cfg.Routes[0].Action.PathRewrite == nil || cfg.Routes[0].Action.PathRewrite.Prefix != "/service-a" {
 		t.Fatalf("unexpected normalized path rewrite: %#v", cfg.Routes[0].Action.PathRewrite)
+	}
+	if cfg.Routes[0].Action.ResponseHeaders == nil || cfg.Routes[0].Action.ResponseHeaders.Set["X-Frame-Options"] != "DENY" {
+		t.Fatalf("unexpected normalized response headers: %#v", cfg.Routes[0].Action.ResponseHeaders)
 	}
 	if cfg.DefaultRoute == nil || cfg.DefaultRoute.Name != "fallback" {
 		t.Fatalf("unexpected default route: %#v", cfg.DefaultRoute)
@@ -295,6 +302,169 @@ func TestProxyRoutePreservesEncodedSuffixOnRewrite(t *testing.T) {
 	}
 }
 
+func TestValidateProxyRulesRawWithRegexRoute(t *testing.T) {
+	cfg := mustValidateProxyRulesRaw(t, `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "name": "service-a-regex",
+      "priority": 10,
+      "match": {
+        "path": { "type": "regex", "value": "^/servicea/(users|orders)/[0-9]+$" }
+      },
+      "action": {
+        "upstream": "http://127.0.0.1:8081"
+      }
+    }
+  ]
+}`)
+
+	if got := cfg.Routes[0].Match.Path.Type; got != "regex" {
+		t.Fatalf("path.type=%s", got)
+	}
+	if got := cfg.Routes[0].Match.Path.Value; got != "^/servicea/(users|orders)/[0-9]+$" {
+		t.Fatalf("path.value=%s", got)
+	}
+	if cfg.Routes[0].Match.Path.compiled == nil {
+		t.Fatal("compiled regex is nil")
+	}
+}
+
+func TestProxyRouteRegexMatchAndPriority(t *testing.T) {
+	cfg := mustValidateProxyRulesRaw(t, `{
+  "upstream_url": "http://legacy.internal:8080",
+  "routes": [
+    {
+      "name": "prefix-first",
+      "priority": 10,
+      "match": {
+        "path": { "type": "prefix", "value": "/servicea/" }
+      },
+      "action": {
+        "upstream": "http://prefix.internal:8080"
+      }
+    },
+    {
+      "name": "regex-second",
+      "priority": 20,
+      "match": {
+        "path": { "type": "regex", "value": "^/servicea/(users|orders)/[0-9]+$" }
+      },
+      "action": {
+        "upstream": "http://regex.internal:8080"
+      }
+    },
+    {
+      "name": "regex-high-priority",
+      "priority": 5,
+      "match": {
+        "hosts": ["regex.example.com"],
+        "path": { "type": "regex", "value": "^/servicea/(users|orders)/[0-9]+$" }
+      },
+      "action": {
+        "upstream": "http://regex-priority.internal:8080"
+      }
+    }
+  ]
+}`)
+
+	tests := []struct {
+		name       string
+		host       string
+		path       string
+		wantRoute  string
+		wantSource string
+		wantFinal  string
+	}{
+		{
+			name:       "prefix route wins when it has lower priority number",
+			host:       "www.example.com",
+			path:       "/servicea/users/42",
+			wantRoute:  "prefix-first",
+			wantSource: "route",
+			wantFinal:  "http://prefix.internal:8080/servicea/users/42",
+		},
+		{
+			name:       "regex route wins when it has the highest priority",
+			host:       "regex.example.com",
+			path:       "/servicea/orders/7",
+			wantRoute:  "regex-high-priority",
+			wantSource: "route",
+			wantFinal:  "http://regex-priority.internal:8080/servicea/orders/7",
+		},
+		{
+			name:       "regex route does not match unrelated path",
+			host:       "regex.example.com",
+			path:       "/servicea/orders/not-a-number",
+			wantRoute:  "prefix-first",
+			wantSource: "route",
+			wantFinal:  "http://prefix.internal:8080/servicea/orders/not-a-number",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision := mustResolveProxyRouteDecision(t, cfg, tt.host, tt.path)
+			if got := decision.RouteName; got != tt.wantRoute {
+				t.Fatalf("route=%s want=%s", got, tt.wantRoute)
+			}
+			if got := string(decision.Source); got != tt.wantSource {
+				t.Fatalf("source=%s want=%s", got, tt.wantSource)
+			}
+			if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath); got != tt.wantFinal {
+				t.Fatalf("final_url=%s want=%s", got, tt.wantFinal)
+			}
+
+			dryRun, err := proxyRouteDryRun(cfg, tt.host, tt.path)
+			if err != nil {
+				t.Fatalf("proxyRouteDryRun: %v", err)
+			}
+			if got := dryRun.RouteName; got != tt.wantRoute {
+				t.Fatalf("dry-run route=%s want=%s", got, tt.wantRoute)
+			}
+			if got := dryRun.FinalURL; got != tt.wantFinal {
+				t.Fatalf("dry-run final_url=%s want=%s", got, tt.wantFinal)
+			}
+		})
+	}
+}
+
+func TestProxyRouteHostRewrite(t *testing.T) {
+	cfg := mustValidateProxyRulesRaw(t, `{
+  "upstream_url": "http://legacy.internal:8080",
+  "routes": [
+    {
+      "name": "host-rewrite",
+      "priority": 10,
+      "match": {
+        "hosts": ["api.example.com"],
+        "path": { "type": "prefix", "value": "/servicea/" }
+      },
+      "action": {
+        "upstream": "http://route.internal:8080",
+        "host_rewrite": "service-a.internal"
+      }
+    }
+  ]
+}`)
+
+	decision := mustResolveProxyRouteDecision(t, cfg, "api.example.com", "/servicea/users")
+	if got := decision.RewrittenHost; got != "service-a.internal" {
+		t.Fatalf("rewritten_host=%s", got)
+	}
+
+	dryRun, err := proxyRouteDryRun(cfg, "api.example.com", "/servicea/users")
+	if err != nil {
+		t.Fatalf("proxyRouteDryRun: %v", err)
+	}
+	if got := dryRun.RewrittenHost; got != "service-a.internal" {
+		t.Fatalf("dry-run rewritten_host=%s", got)
+	}
+	if got := dryRun.FinalURL; got != "http://route.internal:8080/servicea/users" {
+		t.Fatalf("dry-run final_url=%s", got)
+	}
+}
+
 func TestProxyRouteHostMatchBoundaries(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -381,6 +551,75 @@ func TestValidateProxyRulesRawRejectsInvalidActionUpstream(t *testing.T) {
 }`,
 			wantErr: "routes[0].action.upstream is required when upstream_url/upstreams are not set",
 		},
+		{
+			name: "invalid regex path",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "match": {
+        "path": { "type": "regex", "value": "^(foo$" }
+      },
+      "action": {
+        "upstream": "http://127.0.0.1:8081"
+      }
+    }
+  ]
+}`,
+			wantErr: "regex compile error",
+		},
+		{
+			name: "regex path rewrite is rejected",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "match": {
+        "path": { "type": "regex", "value": "^/servicea/.+$" }
+      },
+      "action": {
+        "upstream": "http://127.0.0.1:8081",
+        "path_rewrite": { "prefix": "/service-a/" }
+      }
+    }
+  ]
+}`,
+			wantErr: "does not support regex path matches",
+		},
+		{
+			name: "host rewrite must not include scheme",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": {
+        "upstream": "http://127.0.0.1:8081",
+        "host_rewrite": "https://service-a.internal"
+      }
+    }
+  ]
+}`,
+			wantErr: "host rewrite must not include scheme",
+		},
+		{
+			name: "host rewrite must not use wildcard",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": {
+        "upstream": "http://127.0.0.1:8081",
+        "host_rewrite": "*.service-a.internal"
+      }
+    }
+  ]
+}`,
+			wantErr: "host rewrite does not support wildcards",
+		},
 	}
 
 	for _, tt := range tests {
@@ -453,6 +692,40 @@ func TestValidateProxyRulesRawRejectsRestrictedRouteHeaders(t *testing.T) {
 }`,
 			wantErr: "header is not allowed in route request_headers",
 		},
+		{
+			name: "reject content-length response set",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": {
+        "response_headers": {
+          "set": { "Content-Length": "1" }
+        }
+      }
+    }
+  ]
+}`,
+			wantErr: "header is not allowed in route response_headers",
+		},
+		{
+			name: "reject set-cookie response remove",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": {
+        "response_headers": {
+          "remove": ["Set-Cookie"]
+        }
+      }
+    }
+  ]
+}`,
+			wantErr: "header is not allowed in route response_headers",
+		},
 	}
 
 	for _, tt := range tests {
@@ -505,11 +778,16 @@ func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
 	var gotSet string
 	var gotAdd string
 	var gotRemoved string
+	var gotHost string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotSet = r.Header.Get("X-Service")
 		gotAdd = r.Header.Get("X-Route")
 		gotRemoved = r.Header.Get("X-Debug")
+		gotHost = r.Host
+		w.Header().Set("X-Upstream-Replace", "origin")
+		w.Header().Add("X-Upstream-Add", "origin")
+		w.Header().Set("X-Upstream-Remove", "remove-me")
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer upstream.Close()
@@ -527,11 +805,17 @@ func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
         "path": { "type": "prefix", "value": "/servicea/" }
       },
       "action": {
+        "host_rewrite": "service-a.internal",
         "path_rewrite": { "prefix": "/service-a/" },
         "request_headers": {
           "set": { "X-Service": "service-a" },
           "add": { "X-Route": "service-a" },
           "remove": ["X-Debug"]
+        },
+        "response_headers": {
+          "set": { "X-Upstream-Replace": "rewritten", "X-Route-Response": "service-a" },
+          "add": { "X-Upstream-Add": "added" },
+          "remove": ["X-Upstream-Remove"]
         }
       }
     }
@@ -570,5 +854,20 @@ func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
 	}
 	if gotRemoved != "" {
 		t.Fatalf("X-Debug=%s", gotRemoved)
+	}
+	if gotHost != "service-a.internal" {
+		t.Fatalf("Host=%s", gotHost)
+	}
+	if got := rec.Header().Get("X-Upstream-Replace"); got != "rewritten" {
+		t.Fatalf("X-Upstream-Replace=%s", got)
+	}
+	if got := rec.Header().Values("X-Upstream-Add"); len(got) != 2 || got[0] != "origin" || got[1] != "added" {
+		t.Fatalf("X-Upstream-Add=%v", got)
+	}
+	if got := rec.Header().Get("X-Upstream-Remove"); got != "" {
+		t.Fatalf("X-Upstream-Remove=%s", got)
+	}
+	if got := rec.Header().Get("X-Route-Response"); got != "service-a" {
+		t.Fatalf("X-Route-Response=%s", got)
 	}
 }
