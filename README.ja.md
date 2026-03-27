@@ -63,7 +63,7 @@ Coraza + CRS WAFプロジェクト
 
 | ブロック | 役割 |
 | --- | --- |
-| `server` | 待受、タイムアウト、ヘッダ上限、同時処理上限 |
+| `server` | 待受、タイムアウト、ヘッダ上限、同時処理上限、任意の built-in TLS listener |
 | `runtime` | Goランタイム制御（`gomaxprocs`、`memory_limit_mb`） |
 | `admin` | API/UIベースパス、APIキー、CORS、strict/insecure設定 |
 | `paths` | rules/bypass/country/rate/bot/semantic/CRS/proxy のファイルパス |
@@ -78,6 +78,29 @@ Coraza + CRS WAFプロジェクト
 | --- | --- | --- |
 | `WAF_CONFIG_FILE` | `conf/config.json` | 起動時に読み込むアプリ設定JSON。 |
 | `WAF_LISTEN_PORT` | `9090` | Composeのポート/healthcheck/GoTestWAF用。`config.json` の `server.listen_addr` と揃えてください。 |
+
+#### 任意: Built-in TLS 終端
+
+`[proxy]` は `data/conf/config.json` から直接 HTTPS 待受できます。listener 証明書は config-only で、admin UI からの編集はありません。
+
+```json
+"server": {
+  "listen_addr": ":9443",
+  "tls": {
+    "enabled": true,
+    "cert_file": "/etc/mamotama/tls/fullchain.pem",
+    "key_file": "/etc/mamotama/tls/privkey.pem",
+    "min_version": "tls1.2",
+    "redirect_http": true,
+    "http_redirect_addr": ":9080"
+  }
+}
+```
+
+- 既定値は `server.tls.enabled=false` です。
+- 初版は手動証明書ファイル（`cert_file` / `key_file`）のみ対応です。ACME 自動取得は含みません。
+- `server.tls.redirect_http=true` にすると、別の plain HTTP listener を起動して HTTPS へ permanent redirect します。
+- `server.tls.http_redirect_addr` は `server.listen_addr` と別アドレスにしてください。
 
 ### 管理UI
 
@@ -478,6 +501,14 @@ Claudeコマンドプロバイダのローカルモックテスト:
 
 
 ログやルールが設定されていない場合は `500` で `{"error": "...説明..."}` を返します。
+
+`GET /mamotama-api/status` には built-in listener TLS の read-only フィールドも含まれます:
+- `server_tls_enabled`
+- `server_tls_cert_file`
+- `server_tls_key_configured`
+- `server_tls_min_version`
+- `server_tls_redirect_http`
+- `server_tls_http_redirect_addr`
 
 ---
 

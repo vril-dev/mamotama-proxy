@@ -254,6 +254,41 @@ func main() {
 		MaxHeaderBytes:    config.ServerMaxHeaderBytes,
 	}
 
+	if config.ServerTLSEnabled {
+		tlsConfig, err := config.BuildServerTLSConfig(config.ServerTLSCertFile, config.ServerTLSKeyFile, config.ServerTLSMinVersion)
+		if err != nil {
+			log.Fatalf("[FATAL] build server tls config: %v", err)
+		}
+		srv.TLSConfig = tlsConfig
+		if config.ServerTLSRedirectHTTP {
+			redirectSrv := newHTTPRedirectServer(config.ServerTLSHTTPRedirectAddr, config.ListenAddr)
+			go func() {
+				log.Printf("[INFO] starting HTTP redirect server on %s", config.ServerTLSHTTPRedirectAddr)
+				if err := redirectSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Fatalf("[FATAL] redirect server stopped: %v", err)
+				}
+			}()
+		}
+		log.Printf("[INFO] starting HTTPS server on %s", config.ListenAddr)
+		log.Printf("[SERVER] tls enabled cert_file=%s min_version=%s redirect_http=%t redirect_addr=%s",
+			config.ServerTLSCertFile,
+			config.ServerTLSMinVersion,
+			config.ServerTLSRedirectHTTP,
+			config.ServerTLSHTTPRedirectAddr,
+		)
+		log.Printf("[SERVER] read_timeout=%s read_header_timeout=%s write_timeout=%s idle_timeout=%s max_header_bytes=%d",
+			config.ServerReadTimeout,
+			config.ServerReadHeaderTimeout,
+			config.ServerWriteTimeout,
+			config.ServerIdleTimeout,
+			config.ServerMaxHeaderBytes,
+		)
+		if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("[FATAL] server stopped: %v", err)
+		}
+		return
+	}
+
 	log.Printf("[INFO] starting server on %s", config.ListenAddr)
 	log.Printf("[SERVER] read_timeout=%s read_header_timeout=%s write_timeout=%s idle_timeout=%s max_header_bytes=%d",
 		config.ServerReadTimeout,

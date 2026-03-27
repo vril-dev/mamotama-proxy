@@ -19,14 +19,24 @@ type appConfigFile struct {
 }
 
 type appServerConfig struct {
-	ListenAddr                 string `json:"listen_addr"`
-	ReadTimeoutSec             int    `json:"read_timeout_sec"`
-	ReadHeaderTimeoutSec       int    `json:"read_header_timeout_sec"`
-	WriteTimeoutSec            int    `json:"write_timeout_sec"`
-	IdleTimeoutSec             int    `json:"idle_timeout_sec"`
-	MaxHeaderBytes             int    `json:"max_header_bytes"`
-	MaxConcurrentRequests      int    `json:"max_concurrent_requests"`
-	MaxConcurrentProxyRequests int    `json:"max_concurrent_proxy_requests"`
+	ListenAddr                 string             `json:"listen_addr"`
+	ReadTimeoutSec             int                `json:"read_timeout_sec"`
+	ReadHeaderTimeoutSec       int                `json:"read_header_timeout_sec"`
+	WriteTimeoutSec            int                `json:"write_timeout_sec"`
+	IdleTimeoutSec             int                `json:"idle_timeout_sec"`
+	MaxHeaderBytes             int                `json:"max_header_bytes"`
+	MaxConcurrentRequests      int                `json:"max_concurrent_requests"`
+	MaxConcurrentProxyRequests int                `json:"max_concurrent_proxy_requests"`
+	TLS                        appServerTLSConfig `json:"tls"`
+}
+
+type appServerTLSConfig struct {
+	Enabled          bool   `json:"enabled"`
+	CertFile         string `json:"cert_file"`
+	KeyFile          string `json:"key_file"`
+	MinVersion       string `json:"min_version"`
+	RedirectHTTP     bool   `json:"redirect_http"`
+	HTTPRedirectAddr string `json:"http_redirect_addr"`
 }
 
 type appRuntimeConfig struct {
@@ -100,6 +110,14 @@ func defaultAppConfigFile() appConfigFile {
 			MaxHeaderBytes:             1 << 20,
 			MaxConcurrentRequests:      0,
 			MaxConcurrentProxyRequests: 0,
+			TLS: appServerTLSConfig{
+				Enabled:          false,
+				CertFile:         "",
+				KeyFile:          "",
+				MinVersion:       defaultServerTLSMinVersion,
+				RedirectHTTP:     false,
+				HTTPRedirectAddr: "",
+			},
 		},
 		Runtime: appRuntimeConfig{
 			GOMAXPROCS:    0,
@@ -179,6 +197,7 @@ func loadAppConfigFile(path string) (appConfigFile, error) {
 
 func normalizeAppConfigFile(cfg *appConfigFile) {
 	cfg.Server.ListenAddr = strings.TrimSpace(cfg.Server.ListenAddr)
+	normalizeAppServerTLSConfig(&cfg.Server.TLS)
 	cfg.Admin.APIBasePath = strings.TrimSpace(cfg.Admin.APIBasePath)
 	cfg.Admin.UIBasePath = strings.TrimSpace(cfg.Admin.UIBasePath)
 	cfg.Admin.APIKeyPrimary = strings.TrimSpace(cfg.Admin.APIKeyPrimary)
@@ -244,6 +263,9 @@ func validateAppConfigFile(cfg appConfigFile) error {
 	}
 	if cfg.Server.MaxHeaderBytes < 0 || cfg.Server.MaxConcurrentRequests < 0 || cfg.Server.MaxConcurrentProxyRequests < 0 {
 		return fmt.Errorf("server resource limits must be >= 0")
+	}
+	if err := validateAppServerTLSConfig(cfg.Server); err != nil {
+		return err
 	}
 	if cfg.Runtime.GOMAXPROCS < 0 || cfg.Runtime.MemoryLimitMB < 0 {
 		return fmt.Errorf("runtime resource limits must be >= 0")
