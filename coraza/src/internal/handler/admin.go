@@ -21,6 +21,7 @@ import (
 func StatusHandler(c *gin.Context) {
 	semantic := GetSemanticConfig()
 	semanticStats := GetSemanticStats()
+	notificationStatus := GetNotificationStatus()
 	_, proxyETag, proxyCfg, proxyHealth, proxyRollbackDepth := ProxyRulesSnapshot()
 	dbTotalRows := 0
 	dbWAFBlockRows := 0
@@ -55,6 +56,14 @@ func StatusHandler(c *gin.Context) {
 		"rate_limit_file":                      config.RateLimitFile,
 		"rate_limit_enabled":                   GetRateLimitConfig().Enabled,
 		"rate_limit_rule_count":                len(GetRateLimitConfig().Rules),
+		"notification_file":                    config.NotificationFile,
+		"notification_enabled":                 notificationStatus.Enabled,
+		"notification_sink_count":              notificationStatus.SinkCount,
+		"notification_enabled_sinks":           notificationStatus.EnabledSinkCount,
+		"notification_active_alerts":           notificationStatus.ActiveAlerts,
+		"notification_sent_total":              notificationStatus.Sent,
+		"notification_failed_total":            notificationStatus.Failed,
+		"notification_last_error":              notificationStatus.LastDispatchErr,
 		"bot_defense_file":                     config.BotDefenseFile,
 		"bot_defense_enabled":                  GetBotDefenseConfig().Enabled,
 		"bot_defense_mode":                     GetBotDefenseConfig().Mode,

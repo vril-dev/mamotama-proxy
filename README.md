@@ -454,6 +454,11 @@ This keeps external provider payload small by sending one selected event at a ti
 | GET | `/mamotama-api/rate-limit-rules` | Get rate-limit config file |
 | POST | `/mamotama-api/rate-limit-rules:validate` | Validate rate-limit config (no save) |
 | PUT | `/mamotama-api/rate-limit-rules` | Save rate-limit config (`If-Match` optimistic lock via `ETag`) |
+| GET | `/mamotama-api/notifications` | Get aggregate notification config file |
+| GET | `/mamotama-api/notifications/status` | Get notification runtime status and active alert states |
+| POST | `/mamotama-api/notifications/validate` | Validate notification config (no save) |
+| POST | `/mamotama-api/notifications/test` | Send a test notification using current runtime config |
+| PUT | `/mamotama-api/notifications` | Save notification config (`If-Match` optimistic lock via `ETag`) |
 | GET | `/mamotama-api/bot-defense-rules` | Get bot-defense config file |
 | POST | `/mamotama-api/bot-defense-rules:validate` | Validate bot-defense config (no save) |
 | PUT | `/mamotama-api/bot-defense-rules` | Save bot-defense config (`If-Match` optimistic lock via `ETag`) |
@@ -559,6 +564,75 @@ Oversized JWT header/cookie values are ignored for `jwt_sub` extraction and are 
 - Watch `/mamotama-api/metrics` for sustained increases in rate-limit blocked and adaptive counters
 - Watch `/mamotama-api/metrics` for semantic action counters around login and write endpoints
 - Inspect logs for `rl_key_hash`, `adaptive`, `risk_score`, `reason_list`, and `score_breakdown` when tuning false positives or throttling
+
+### Notifications
+
+You can edit `paths.notification_file` (default: `conf/notifications.conf`) from `/notifications`.
+Notifications are disabled by default and emit only on aggregate state transitions, not on every blocked request.
+
+- upstream notifications aggregate repeated proxy errors and transition `quiet -> active -> escalated -> quiet(recovered)`
+- security notifications aggregate `waf_block`, `rate_limited`, `semantic_anomaly`, `bot_challenge`, and `ip_reputation` events and transition `quiet -> active -> escalated -> quiet(recovered)`
+- supported sinks are `webhook` and `email`
+- `POST /mamotama-api/notifications/test` sends a test notification using the current runtime config
+- `GET /mamotama-api/notifications/status` shows active alert states, sink counts, and the last dispatch error
+
+#### JSON Parameter Quick Reference
+
+| Parameter | Example | Effect |
+| --- | --- | --- |
+| `enabled` | `true` / `false` | Enables/disables notification dispatch globally. Default is `false`. |
+| `cooldown_seconds` | `900` | Minimum seconds between sends for the same alert key/state progression. |
+| `sinks[].type` | `"webhook"` / `"email"` | Delivery backend. |
+| `sinks[].enabled` | `true` / `false` | Enables/disables an individual sink. |
+| `sinks[].webhook_url` | `"https://hooks.example.invalid/mamotama"` | Target URL for webhook delivery. |
+| `sinks[].headers` | `{"X-Mamotama-Token":"..."}` | Optional webhook headers. |
+| `sinks[].smtp_address` | `"smtp.example.invalid:587"` | SMTP relay used by email sink. |
+| `sinks[].from` / `sinks[].to` | `"alerts@example.invalid"` / `["secops@example.invalid"]` | Email sender and recipients. |
+| `upstream.window_seconds` | `60` | Aggregation window for proxy error counting. |
+| `upstream.active_threshold` | `3` | Count that moves upstream alert state from `quiet` to `active`. |
+| `upstream.escalated_threshold` | `10` | Count that moves upstream alert state from `active` to `escalated`. |
+| `security.window_seconds` | `300` | Aggregation window for security event counting. |
+| `security.active_threshold` | `20` | Count that moves security alert state from `quiet` to `active`. |
+| `security.escalated_threshold` | `100` | Count that moves security alert state from `active` to `escalated`. |
+| `security.sources` | `["waf_block","rate_limited"]` | Security event types included in aggregate tracking. |
+
+#### Recommended Settings
+
+- keep notifications disabled until webhook/email delivery has been verified with `POST /mamotama-api/notifications/test`
+- start with webhook delivery first; Slack / Teams can usually consume the webhook sink directly
+- enable upstream notifications first on public reverse-proxy traffic to catch sustained backend outages without per-request noise
+- enable security notifications only after rate-limit / semantic thresholds have been tuned enough to avoid false-positive floods
+
+Example:
+
+```json
+{
+  "enabled": false,
+  "cooldown_seconds": 900,
+  "sinks": [
+    {
+      "name": "primary-webhook",
+      "type": "webhook",
+      "enabled": false,
+      "webhook_url": "https://hooks.example.invalid/mamotama",
+      "timeout_seconds": 5
+    }
+  ],
+  "upstream": {
+    "enabled": true,
+    "window_seconds": 60,
+    "active_threshold": 3,
+    "escalated_threshold": 10
+  },
+  "security": {
+    "enabled": true,
+    "window_seconds": 300,
+    "active_threshold": 20,
+    "escalated_threshold": 100,
+    "sources": ["waf_block", "rate_limited", "semantic_anomaly", "bot_challenge"]
+  }
+}
+```
 
 ### Bot Defense Settings
 

@@ -53,6 +53,7 @@ type appPathsConfig struct {
 	RateLimitFile    string `json:"rate_limit_file"`
 	BotDefenseFile   string `json:"bot_defense_file"`
 	SemanticFile     string `json:"semantic_file"`
+	NotificationFile string `json:"notification_file"`
 	LogFile          string `json:"log_file"`
 	CRSSetupFile     string `json:"crs_setup_file"`
 	CRSRulesDir      string `json:"crs_rules_dir"`
@@ -122,6 +123,7 @@ func defaultAppConfigFile() appConfigFile {
 			RateLimitFile:    "conf/rate-limit.conf",
 			BotDefenseFile:   "conf/bot-defense.conf",
 			SemanticFile:     "conf/semantic.conf",
+			NotificationFile: "conf/notifications.conf",
 			LogFile:          "",
 			CRSSetupFile:     "rules/crs/crs-setup.conf",
 			CRSRulesDir:      "rules/crs/rules",
@@ -192,6 +194,7 @@ func normalizeAppConfigFile(cfg *appConfigFile) {
 	cfg.Paths.RateLimitFile = strings.TrimSpace(cfg.Paths.RateLimitFile)
 	cfg.Paths.BotDefenseFile = strings.TrimSpace(cfg.Paths.BotDefenseFile)
 	cfg.Paths.SemanticFile = strings.TrimSpace(cfg.Paths.SemanticFile)
+	cfg.Paths.NotificationFile = strings.TrimSpace(cfg.Paths.NotificationFile)
 	cfg.Paths.LogFile = strings.TrimSpace(cfg.Paths.LogFile)
 	cfg.Paths.CRSSetupFile = strings.TrimSpace(cfg.Paths.CRSSetupFile)
 	cfg.Paths.CRSRulesDir = strings.TrimSpace(cfg.Paths.CRSRulesDir)

@@ -455,6 +455,11 @@ Claudeコマンドプロバイダのローカルモックテスト:
 | GET  | `/mamotama-api/rate-limit-rules` | レート制限設定ファイルの内容を取得 |
 | POST | `/mamotama-api/rate-limit-rules:validate` | レート制限設定の構文検証のみ（保存なし） |
 | PUT  | `/mamotama-api/rate-limit-rules` | レート制限設定ファイルを保存（`If-Match` に `ETag` を指定して楽観ロック） |
+| GET  | `/mamotama-api/notifications` | 集計通知設定ファイルの内容を取得 |
+| GET  | `/mamotama-api/notifications/status` | 通知ランタイム状態と active alert を取得 |
+| POST | `/mamotama-api/notifications/validate` | 通知設定の構文検証のみ（保存なし） |
+| POST | `/mamotama-api/notifications/test` | 現在設定でテスト通知を送信 |
+| PUT  | `/mamotama-api/notifications` | 通知設定ファイルを保存（`If-Match` に `ETag` を指定して楽観ロック） |
 | GET  | `/mamotama-api/bot-defense-rules` | Bot defense設定ファイルの内容を取得 |
 | POST | `/mamotama-api/bot-defense-rules:validate` | Bot defense設定の構文検証のみ（保存なし） |
 | PUT  | `/mamotama-api/bot-defense-rules` | Bot defense設定ファイルを保存（`If-Match` に `ETag` を指定して楽観ロック） |
@@ -562,6 +567,75 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 - `/mamotama-api/metrics` で rate-limit の blocked / adaptive カウンタ増加を確認する
 - `/mamotama-api/metrics` で login / write 系パス周辺の semantic action カウンタを確認する
 - 調整時はログの `rl_key_hash`, `adaptive`, `risk_score`, `reason_list`, `score_breakdown` を見る
+
+### Notifications 設定
+
+管理ダッシュボード `/notifications` から、`paths.notification_file`（既定: `conf/notifications.conf`）を編集できます。
+通知は既定で無効で、ブロック 1 件ごとではなく、集計された状態遷移だけを送ります。
+
+- upstream 通知は、proxy error の集計に応じて `quiet -> active -> escalated -> quiet(recovered)` で遷移します
+- security 通知は、`waf_block`, `rate_limited`, `semantic_anomaly`, `bot_challenge`, `ip_reputation` の集計に応じて `quiet -> active -> escalated -> quiet(recovered)` で遷移します
+- sink は `webhook` と `email` をサポートします
+- `POST /mamotama-api/notifications/test` で現在設定のテスト通知を送れます
+- `GET /mamotama-api/notifications/status` で active alert、sink 数、最終 dispatch error を確認できます
+
+#### JSONパラメータ早見表
+
+| パラメータ | 例 | 影響 |
+| --- | --- | --- |
+| `enabled` | `true` / `false` | 通知配送全体の ON/OFF。既定は `false`。 |
+| `cooldown_seconds` | `900` | 同じ alert key / state で再送するまでの最小秒数。 |
+| `sinks[].type` | `"webhook"` / `"email"` | 配送方式。 |
+| `sinks[].enabled` | `true` / `false` | 個別 sink の ON/OFF。 |
+| `sinks[].webhook_url` | `"https://hooks.example.invalid/mamotama"` | webhook 配送先 URL。 |
+| `sinks[].headers` | `{"X-Mamotama-Token":"..."}` | 任意の webhook header。 |
+| `sinks[].smtp_address` | `"smtp.example.invalid:587"` | email sink が使う SMTP relay。 |
+| `sinks[].from` / `sinks[].to` | `"alerts@example.invalid"` / `["secops@example.invalid"]` | email の送信元と送信先。 |
+| `upstream.window_seconds` | `60` | proxy error を集計する窓秒数。 |
+| `upstream.active_threshold` | `3` | upstream alert を `quiet` から `active` に進める件数。 |
+| `upstream.escalated_threshold` | `10` | upstream alert を `active` から `escalated` に進める件数。 |
+| `security.window_seconds` | `300` | security event を集計する窓秒数。 |
+| `security.active_threshold` | `20` | security alert を `quiet` から `active` に進める件数。 |
+| `security.escalated_threshold` | `100` | security alert を `active` から `escalated` に進める件数。 |
+| `security.sources` | `["waf_block","rate_limited"]` | 集計対象にする security event 種別。 |
+
+#### 推奨設定
+
+- `POST /mamotama-api/notifications/test` で疎通確認できるまでは通知を有効化しない
+- 最初は webhook を優先する。Slack / Teams 連携は多くの場合 webhook sink で吸収できる
+- public reverse proxy では upstream 通知を先に有効化して、backend 障害を per-request 通知なしで検知する
+- security 通知は、rate-limit / semantic のしきい値調整が終わってから有効化する
+
+例:
+
+```json
+{
+  "enabled": false,
+  "cooldown_seconds": 900,
+  "sinks": [
+    {
+      "name": "primary-webhook",
+      "type": "webhook",
+      "enabled": false,
+      "webhook_url": "https://hooks.example.invalid/mamotama",
+      "timeout_seconds": 5
+    }
+  ],
+  "upstream": {
+    "enabled": true,
+    "window_seconds": 60,
+    "active_threshold": 3,
+    "escalated_threshold": 10
+  },
+  "security": {
+    "enabled": true,
+    "window_seconds": 300,
+    "active_threshold": 20,
+    "escalated_threshold": 100,
+    "sources": ["waf_block", "rate_limited", "semantic_anomaly", "bot_challenge"]
+  }
+}
+```
 
 ### Bot Defense 設定
 

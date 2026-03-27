@@ -90,6 +90,15 @@ func main() {
 		}
 		log.Printf("[SEMANTIC][INIT] loaded")
 	}
+	handler.SetNotificationProductLabel("proxy")
+	if err := handler.InitNotifications(config.NotificationFile); err != nil {
+		log.Printf("[NOTIFY][INIT][ERR] %v (path=%s)", err, config.NotificationFile)
+	} else {
+		if err := handler.SyncNotificationStorage(); err != nil {
+			log.Printf("[NOTIFY][DB][WARN] sync failed (fallback=file): %v", err)
+		}
+		log.Printf("[NOTIFY][INIT] loaded")
+	}
 
 	_, _, proxyCfg, _, _ := handler.ProxyRulesSnapshot()
 	log.Println("[INFO] WAF upstream target:", proxyCfg.UpstreamURL)
@@ -140,6 +149,8 @@ func main() {
 					config.APIBasePath + "/cache-rules",
 					config.APIBasePath + "/country-block-rules",
 					config.APIBasePath + "/rate-limit-rules",
+					config.APIBasePath + "/notifications",
+					config.APIBasePath + "/notifications/status",
 					config.APIBasePath + "/bot-defense-rules",
 					config.APIBasePath + "/semantic-rules",
 					config.APIBasePath + "/proxy-rules",
@@ -179,6 +190,11 @@ func main() {
 		api.GET("/rate-limit-rules", handler.GetRateLimitRules)
 		api.POST("/rate-limit-rules:validate", handler.ValidateRateLimitRules)
 		api.PUT("/rate-limit-rules", handler.PutRateLimitRules)
+		api.GET("/notifications", handler.GetNotificationRules)
+		api.GET("/notifications/status", handler.GetNotificationStatusHandler)
+		api.POST("/notifications/validate", handler.ValidateNotificationRules)
+		api.POST("/notifications/test", handler.TestNotificationRules)
+		api.PUT("/notifications", handler.PutNotificationRules)
 		api.GET("/bot-defense-rules", handler.GetBotDefenseRules)
 		api.POST("/bot-defense-rules:validate", handler.ValidateBotDefenseRules)
 		api.PUT("/bot-defense-rules", handler.PutBotDefenseRules)
