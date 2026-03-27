@@ -30,6 +30,18 @@ var proxyRouteRestrictedHeaders = map[string]struct{}{
 	"X-Forwarded-Proto":   {},
 }
 
+var proxyRouteRestrictedResponseHeaders = map[string]struct{}{
+	"Connection":        {},
+	"Content-Length":    {},
+	"Keep-Alive":        {},
+	"Proxy-Connection":  {},
+	"Set-Cookie":        {},
+	"TE":                {},
+	"Trailer":           {},
+	"Transfer-Encoding": {},
+	"Upgrade":           {},
+}
+
 type ProxyRoute struct {
 	Name     string           `json:"name,omitempty"`
 	Enabled  *bool            `json:"enabled,omitempty"`
@@ -44,14 +56,17 @@ type ProxyRouteMatch struct {
 }
 
 type ProxyRoutePathMatch struct {
-	Type  string `json:"type"`
-	Value string `json:"value"`
+	Type     string `json:"type"`
+	Value    string `json:"value"`
+	compiled *regexp.Regexp
 }
 
 type ProxyRouteAction struct {
-	Upstream       string                      `json:"upstream,omitempty"`
-	PathRewrite    *ProxyRoutePathRewrite      `json:"path_rewrite,omitempty"`
-	RequestHeaders *ProxyRouteHeaderOperations `json:"request_headers,omitempty"`
+	Upstream        string                      `json:"upstream,omitempty"`
+	HostRewrite     string                      `json:"host_rewrite,omitempty"`
+	PathRewrite     *ProxyRoutePathRewrite      `json:"path_rewrite,omitempty"`
+	RequestHeaders  *ProxyRouteHeaderOperations `json:"request_headers,omitempty"`
+	ResponseHeaders *ProxyRouteHeaderOperations `json:"response_headers,omitempty"`
 }
 
 type ProxyRoutePathRewrite struct {
@@ -90,7 +105,8 @@ type proxyRouteDecision struct {
 	SelectedUpstreamURL string
 	Target              *url.URL
 	HealthKey           string
-	HeaderOps           ProxyRouteHeaderOperations
+	RequestHeaderOps    ProxyRouteHeaderOperations
+	ResponseHeaderOps   ProxyRouteHeaderOperations
 	LogSelection        bool
 }
 
@@ -141,8 +157,10 @@ func normalizeProxyDefaultRoute(in *ProxyDefaultRoute) *ProxyDefaultRoute {
 func normalizeProxyRouteAction(in ProxyRouteAction) ProxyRouteAction {
 	out := in
 	out.Upstream = strings.TrimSpace(out.Upstream)
+	out.HostRewrite = strings.TrimSpace(out.HostRewrite)
 	out.PathRewrite = normalizeProxyRoutePathRewrite(out.PathRewrite)
 	out.RequestHeaders = normalizeProxyRouteHeaderOperations(out.RequestHeaders)
+	out.ResponseHeaders = normalizeProxyRouteHeaderOperations(out.ResponseHeaders)
 	return out
 }
 
@@ -157,9 +175,12 @@ func normalizeProxyRoutePathMatch(in *ProxyRoutePathMatch) *ProxyRoutePathMatch 
 		out.Value = normalizeProxyRoutePrefix(out.Value)
 	case "exact":
 		out.Value = normalizeProxyRouteExactPath(out.Value)
+	case "regex":
+		out.Value = strings.TrimSpace(out.Value)
 	default:
 		out.Value = strings.TrimSpace(out.Value)
 	}
+	out.compiled = nil
 	return &out
 }
 
@@ -295,6 +316,9 @@ func validateProxyRoutes(cfg ProxyRulesConfig) error {
 		if route.Action.PathRewrite != nil && route.Match.Path == nil {
 			return fmt.Errorf("routes[%d].action.path_rewrite requires match.path", i)
 		}
+		if route.Action.PathRewrite != nil && route.Match.Path != nil && route.Match.Path.Type == "regex" {
+			return fmt.Errorf("routes[%d].action.path_rewrite does not support regex path matches", i)
+		}
 	}
 	if cfg.DefaultRoute != nil && proxyRouteEnabled(cfg.DefaultRoute.Enabled) {
 		if err := validateProxyRouteAction(cfg.DefaultRoute.Action, cfg, namedUpstreams, nameCounts, "default_route.action"); err != nil {
@@ -318,15 +342,22 @@ func validateProxyRouteMatch(match ProxyRouteMatch, field string) error {
 		return nil
 	}
 	switch match.Path.Type {
-	case "exact", "prefix":
+	case "exact", "prefix", "regex":
 	default:
-		return fmt.Errorf("%s.path.type must be exact or prefix", field)
+		return fmt.Errorf("%s.path.type must be exact, prefix, or regex", field)
 	}
 	if strings.TrimSpace(match.Path.Value) == "" {
 		return fmt.Errorf("%s.path.value is required", field)
 	}
-	if !strings.HasPrefix(match.Path.Value, "/") {
+	if match.Path.Type != "regex" && !strings.HasPrefix(match.Path.Value, "/") {
 		return fmt.Errorf("%s.path.value must start with '/'", field)
+	}
+	if match.Path.Type == "regex" {
+		compiled, err := regexp.Compile(match.Path.Value)
+		if err != nil {
+			return fmt.Errorf("%s.path.value regex compile error: %w", field, err)
+		}
+		match.Path.compiled = compiled
 	}
 	return nil
 }
@@ -350,6 +381,11 @@ func validateProxyRouteAction(action ProxyRouteAction, cfg ProxyRulesConfig, nam
 			}
 		}
 	}
+	if hostRewrite := strings.TrimSpace(action.HostRewrite); hostRewrite != "" {
+		if err := validateProxyRouteOutboundHost(hostRewrite); err != nil {
+			return fmt.Errorf("%s.host_rewrite: %w", field, err)
+		}
+	}
 	if action.PathRewrite != nil {
 		if strings.TrimSpace(action.PathRewrite.Prefix) == "" {
 			return fmt.Errorf("%s.path_rewrite.prefix is required", field)
@@ -359,23 +395,28 @@ func validateProxyRouteAction(action ProxyRouteAction, cfg ProxyRulesConfig, nam
 		}
 	}
 	if action.RequestHeaders != nil {
-		if err := validateProxyRouteHeaderOperations(*action.RequestHeaders, field+".request_headers"); err != nil {
+		if err := validateProxyRouteHeaderOperations(*action.RequestHeaders, field+".request_headers", proxyRouteRestrictedHeaders, "route request_headers"); err != nil {
+			return err
+		}
+	}
+	if action.ResponseHeaders != nil {
+		if err := validateProxyRouteHeaderOperations(*action.ResponseHeaders, field+".response_headers", proxyRouteRestrictedResponseHeaders, "route response_headers"); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateProxyRouteHeaderOperations(ops ProxyRouteHeaderOperations, field string) error {
+func validateProxyRouteHeaderOperations(ops ProxyRouteHeaderOperations, field string, restricted map[string]struct{}, kind string) error {
 	seen := map[string]string{}
 	for name := range ops.Set {
-		if err := validateProxyRouteHeaderName(name); err != nil {
+		if err := validateProxyRouteHeaderName(name, restricted, kind); err != nil {
 			return fmt.Errorf("%s.set.%s: %w", field, name, err)
 		}
 		seen[name] = "set"
 	}
 	for name := range ops.Add {
-		if err := validateProxyRouteHeaderName(name); err != nil {
+		if err := validateProxyRouteHeaderName(name, restricted, kind); err != nil {
 			return fmt.Errorf("%s.add.%s: %w", field, name, err)
 		}
 		if prev, ok := seen[name]; ok {
@@ -384,7 +425,7 @@ func validateProxyRouteHeaderOperations(ops ProxyRouteHeaderOperations, field st
 		seen[name] = "add"
 	}
 	for _, name := range ops.Remove {
-		if err := validateProxyRouteHeaderName(name); err != nil {
+		if err := validateProxyRouteHeaderName(name, restricted, kind); err != nil {
 			return fmt.Errorf("%s.remove.%s: %w", field, name, err)
 		}
 		if prev, ok := seen[name]; ok {
@@ -395,15 +436,15 @@ func validateProxyRouteHeaderOperations(ops ProxyRouteHeaderOperations, field st
 	return nil
 }
 
-func validateProxyRouteHeaderName(name string) error {
+func validateProxyRouteHeaderName(name string, restricted map[string]struct{}, kind string) error {
 	if name == "" {
 		return fmt.Errorf("header name is required")
 	}
 	if !proxyRouteHeaderNamePattern.MatchString(name) {
 		return fmt.Errorf("invalid header name")
 	}
-	if _, ok := proxyRouteRestrictedHeaders[canonicalProxyRouteHeaderName(name)]; ok {
-		return fmt.Errorf("header is not allowed in route request_headers")
+	if _, ok := restricted[canonicalProxyRouteHeaderName(name)]; ok {
+		return fmt.Errorf("header is not allowed in %s", kind)
 	}
 	return nil
 }
@@ -422,6 +463,27 @@ func validateProxyRouteHostPattern(host string) error {
 		if strings.TrimPrefix(host, "*.") == "" {
 			return fmt.Errorf("wildcard host suffix is required")
 		}
+	}
+	return nil
+}
+
+func validateProxyRouteOutboundHost(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return fmt.Errorf("host is required")
+	}
+	if strings.Contains(host, "://") {
+		return fmt.Errorf("host rewrite must not include scheme")
+	}
+	if strings.Contains(host, "/") {
+		return fmt.Errorf("host rewrite must not contain '/'")
+	}
+	if strings.Contains(host, "*") {
+		return fmt.Errorf("host rewrite does not support wildcards")
+	}
+	parsed, err := url.Parse("http://" + host)
+	if err != nil || parsed.Hostname() == "" {
+		return fmt.Errorf("host rewrite must be a valid host or host:port")
 	}
 	return nil
 }
@@ -621,16 +683,27 @@ func buildProxyRouteDecision(originalHost string, originalPath string, originalR
 		RouteName:           routeName,
 		OriginalHost:        originalHost,
 		OriginalPath:        originalPath,
-		RewrittenHost:       target.Host,
+		RewrittenHost:       resolveProxyRouteForwardedHost(originalHost, target.Host, action.HostRewrite),
 		RewrittenPath:       rewrittenPath,
 		RewrittenRawPath:    rewrittenRawPath,
 		SelectedUpstream:    selectedUpstream,
 		SelectedUpstreamURL: selectedURL,
 		Target:              target,
 		HealthKey:           healthKey,
-		HeaderOps:           valueOrZero(action.RequestHeaders),
+		RequestHeaderOps:    valueOrZero(action.RequestHeaders),
+		ResponseHeaderOps:   valueOrZero(action.ResponseHeaders),
 		LogSelection:        source != proxyRouteResolutionLegacy,
 	}, nil
+}
+
+func resolveProxyRouteForwardedHost(originalHost string, targetHost string, hostRewrite string) string {
+	if next := strings.TrimSpace(hostRewrite); next != "" {
+		return next
+	}
+	if next := strings.TrimSpace(originalHost); next != "" {
+		return next
+	}
+	return strings.TrimSpace(targetHost)
 }
 
 func resolveProxyRouteTarget(cfg ProxyRulesConfig, ref string, health *upstreamHealthMonitor) (*url.URL, string, string, string, error) {
@@ -763,17 +836,41 @@ func proxyRoutePathMatchDetails(match *ProxyRoutePathMatch, reqPath string) (boo
 			return true, strings.TrimPrefix(reqPath, match.Value)
 		}
 		return false, ""
+	case "regex":
+		compiled, err := proxyRouteCompiledRegexp(match)
+		if err != nil {
+			return false, ""
+		}
+		return compiled.MatchString(reqPath), ""
 	default:
 		return false, ""
 	}
 }
 
 func rewriteProxyRoutePath(originalPath string, match *ProxyRoutePathMatch, rewritePrefix string) (string, error) {
+	if match != nil && match.Type == "regex" {
+		return "", fmt.Errorf("path rewrite does not support regex path matches")
+	}
 	ok, suffix := proxyRoutePathMatchDetails(match, originalPath)
 	if !ok {
 		return "", fmt.Errorf("path %q does not match route path rule", originalPath)
 	}
 	return joinProxyRoutePath(rewritePrefix, suffix), nil
+}
+
+func proxyRouteCompiledRegexp(match *ProxyRoutePathMatch) (*regexp.Regexp, error) {
+	if match == nil || match.Type != "regex" {
+		return nil, fmt.Errorf("regex path match is not configured")
+	}
+	if match.compiled != nil {
+		return match.compiled, nil
+	}
+	compiled, err := regexp.Compile(match.Value)
+	if err != nil {
+		return nil, err
+	}
+	match.compiled = compiled
+	return compiled, nil
 }
 
 func joinProxyRoutePath(prefix string, suffix string) string {
@@ -796,7 +893,7 @@ func joinProxyRoutePath(prefix string, suffix string) string {
 	return prefix + "/" + suffix
 }
 
-func applyProxyRouteRequestHeaders(header http.Header, ops ProxyRouteHeaderOperations) {
+func applyProxyRouteHeaders(header http.Header, ops ProxyRouteHeaderOperations) {
 	if header == nil {
 		return
 	}
