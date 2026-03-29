@@ -80,6 +80,7 @@ type appAdminRateLimitConfig struct {
 
 type appPathsConfig struct {
 	ProxyConfigFile  string `json:"proxy_config_file"`
+	CacheStoreFile   string `json:"cache_store_file"`
 	RulesFile        string `json:"rules_file"`
 	BypassFile       string `json:"bypass_file"`
 	CountryBlockFile string `json:"country_block_file"`
@@ -191,6 +192,7 @@ func defaultAppConfigFile() appConfigFile {
 		},
 		Paths: appPathsConfig{
 			ProxyConfigFile:  "conf/proxy.json",
+			CacheStoreFile:   "conf/cache-store.json",
 			RulesFile:        "rules/mamotama.conf",
 			BypassFile:       "conf/waf.bypass",
 			CountryBlockFile: "conf/country-block.conf",
@@ -277,6 +279,7 @@ func normalizeAppConfigFile(cfg *appConfigFile) {
 	cfg.FPTuner.APIKey = strings.TrimSpace(cfg.FPTuner.APIKey)
 	cfg.FPTuner.Model = strings.TrimSpace(cfg.FPTuner.Model)
 	cfg.Paths.ProxyConfigFile = strings.TrimSpace(cfg.Paths.ProxyConfigFile)
+	cfg.Paths.CacheStoreFile = strings.TrimSpace(cfg.Paths.CacheStoreFile)
 	cfg.Paths.RulesFile = strings.TrimSpace(cfg.Paths.RulesFile)
 	cfg.Paths.BypassFile = strings.TrimSpace(cfg.Paths.BypassFile)
 	cfg.Paths.CountryBlockFile = strings.TrimSpace(cfg.Paths.CountryBlockFile)
@@ -348,6 +351,9 @@ func validateAppConfigFile(cfg appConfigFile) error {
 	}
 	if cfg.Paths.ProxyConfigFile == "" {
 		return fmt.Errorf("paths.proxy_config_file is required")
+	}
+	if cfg.Paths.CacheStoreFile == "" {
+		return fmt.Errorf("paths.cache_store_file is required")
 	}
 	if cfg.Paths.RulesFile == "" {
 		return fmt.Errorf("paths.rules_file is required")

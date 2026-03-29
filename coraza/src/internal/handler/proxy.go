@@ -349,7 +349,7 @@ func ProxyHandler(c *gin.Context) {
 			return
 		}
 		proxyServed = true
-		ServeProxy(c.Writer, c.Request)
+		ServeProxyWithCache(c)
 		return
 	}
 
@@ -405,7 +405,7 @@ func ProxyHandler(c *gin.Context) {
 		return
 	}
 	proxyServed = true
-	ServeProxy(c.Writer, c.Request)
+	ServeProxyWithCache(c)
 }
 
 func genReqID() string {

@@ -29,6 +29,7 @@ func SyncAllStorageFromDB() error {
 		{name: "bot-defense", run: SyncBotDefenseStorage},
 		{name: "semantic", run: SyncSemanticStorage},
 		{name: "cache-rules", run: SyncCacheRulesStorage},
+		{name: "cache-store", run: SyncResponseCacheStoreStorage},
 	}
 
 	var errs []error
