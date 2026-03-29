@@ -177,7 +177,7 @@ export default function CacheRulePanel() {
     setClearingStore(true);
     setError(null);
     try {
-      const js = await apiPostJson<{ ok: boolean; clear?: { cleared_entries?: number; cleared_bytes?: number } }>("/cache-store:clear", {});
+      const js = await apiPostJson<{ ok: boolean; clear?: { cleared_entries?: number; cleared_bytes?: number } }>("/cache-store/clear", {});
       const clear = js.clear ?? {};
       setMessages([`Cache cleared. entries=${clear.cleared_entries ?? 0} bytes=${clear.cleared_bytes ?? 0}`]);
       await load();

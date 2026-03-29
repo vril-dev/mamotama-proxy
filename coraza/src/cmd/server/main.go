@@ -182,7 +182,7 @@ func main() {
 					config.APIBasePath + "/bypass-rules",
 					config.APIBasePath + "/cache-rules",
 					config.APIBasePath + "/cache-store",
-					config.APIBasePath + "/cache-store:clear",
+					config.APIBasePath + "/cache-store/clear",
 					config.APIBasePath + "/country-block-rules",
 					config.APIBasePath + "/rate-limit-rules",
 					config.APIBasePath + "/notifications",
@@ -223,9 +223,9 @@ func main() {
 		api.POST("/cache-rules:validate", handler.ValidateCacheRules)
 		api.PUT("/cache-rules", handler.PutCacheRules)
 		api.GET("/cache-store", handler.GetResponseCacheStore)
-		api.POST("/cache-store:validate", handler.ValidateResponseCacheStore)
+		api.POST("/cache-store/validate", handler.ValidateResponseCacheStore)
 		api.PUT("/cache-store", handler.PutResponseCacheStore)
-		api.POST("/cache-store:clear", handler.ClearResponseCacheStore)
+		api.POST("/cache-store/clear", handler.ClearResponseCacheStore)
 		api.GET("/country-block-rules", handler.GetCountryBlockRules)
 		api.POST("/country-block-rules:validate", handler.ValidateCountryBlockRules)
 		api.PUT("/country-block-rules", handler.PutCountryBlockRules)

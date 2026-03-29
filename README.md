@@ -688,9 +688,9 @@ This keeps external provider payload small by sending one selected event at a ti
 | POST | `/mamotama-api/cache-rules:validate` | Validate cache config (no save) |
 | PUT | `/mamotama-api/cache-rules` | Save `cache.conf` (`If-Match` optimistic lock via `ETag`) |
 | GET | `/mamotama-api/cache-store` | Return internal cache store settings and runtime counters |
-| POST | `/mamotama-api/cache-store:validate` | Validate internal cache store settings (no save) |
+| POST | `/mamotama-api/cache-store/validate` | Validate internal cache store settings (no save) |
 | PUT | `/mamotama-api/cache-store` | Save `conf/cache-store.json` (`If-Match` optimistic lock via `ETag`) |
-| POST | `/mamotama-api/cache-store:clear` | Remove all cached bodies and metadata |
+| POST | `/mamotama-api/cache-store/clear` | Remove all cached bodies and metadata |
 | GET | `/mamotama-api/proxy-rules` | Get current proxy transport + route config (`conf/proxy.json`) |
 | POST | `/mamotama-api/proxy-rules:validate` | Validate proxy transport + route config (no save) |
 | POST | `/mamotama-api/proxy-rules:probe` | TCP probe the current primary/fallback upstream target |
@@ -1140,7 +1140,7 @@ Field details:
 - Go side sets `X-Mamotama-Cacheable` and `X-Accel-Expires` on responses matching cache rules
 - eligible `GET` responses are also stored in the internal file-backed cache under `cache-store.json.store_dir`
 - default internal cache capacity is `2 GiB` (`max_bytes=2147483648`)
-- `POST /mamotama-api/cache-store:clear` clears the full internal cache immediately
+- `POST /mamotama-api/cache-store/clear` clears the full internal cache immediately
 - these headers can still be consumed by external cache/CDN layers if needed
 - Requests with auth headers, cookies, or API paths are non-cacheable by default
 - Upstream responses containing `Set-Cookie` are not stored (to prevent shared-cache leakage)
