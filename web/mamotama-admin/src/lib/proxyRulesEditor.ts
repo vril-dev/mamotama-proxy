@@ -6,6 +6,13 @@ export type ProxyRouteHeaderOperations = {
   remove: string[];
 };
 
+export type ProxyRouteQueryOperations = {
+  set: Record<string, string>;
+  add: Record<string, string>;
+  remove: string[];
+  removePrefixes: string[];
+};
+
 export type ProxyRoutePathMatch = {
   type: "" | "exact" | "prefix" | "regex";
   value: string;
@@ -23,6 +30,7 @@ export type ProxyRouteAction = {
   hashKey: string;
   hostRewrite: string;
   pathRewrite: ProxyRoutePathRewrite | null;
+  queryRewrite: ProxyRouteQueryOperations;
   requestHeaders: ProxyRouteHeaderOperations;
   responseHeaders: ProxyRouteHeaderOperations;
 };
@@ -63,6 +71,15 @@ export function createEmptyHeaderOperations(): ProxyRouteHeaderOperations {
   };
 }
 
+export function createEmptyQueryOperations(): ProxyRouteQueryOperations {
+  return {
+    set: {},
+    add: {},
+    remove: [],
+    removePrefixes: [],
+  };
+}
+
 export function createEmptyRouteAction(): ProxyRouteAction {
   return {
     upstream: "",
@@ -72,6 +89,7 @@ export function createEmptyRouteAction(): ProxyRouteAction {
     hashKey: "",
     hostRewrite: "",
     pathRewrite: null,
+    queryRewrite: createEmptyQueryOperations(),
     requestHeaders: createEmptyHeaderOperations(),
     responseHeaders: createEmptyHeaderOperations(),
   };
@@ -142,6 +160,33 @@ export function multilineToHeaderMap(value: string): Record<string, string> {
       continue;
     }
     out[key] = line.slice(idx + 1).trimStart();
+  }
+  return out;
+}
+
+export function queryMapToMultiline(values: Record<string, string>): string {
+  return Object.entries(values)
+    .map(([key, value]) => (value ? `${key}=${value}` : key))
+    .join("\n");
+}
+
+export function multilineToQueryMap(value: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rawLine of value.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    const idx = line.indexOf("=");
+    if (idx < 0) {
+      out[line] = "";
+      continue;
+    }
+    const key = line.slice(0, idx).trim();
+    if (!key) {
+      continue;
+    }
+    out[key] = line.slice(idx + 1);
   }
   return out;
 }
@@ -281,6 +326,7 @@ function readRouteAction(value: JSONRecord | null): ProxyRouteAction {
     hashKey: readString(value.hash_key),
     hostRewrite: readString(value.host_rewrite),
     pathRewrite: readPathRewrite(value.path_rewrite),
+    queryRewrite: readQueryOperations(value.query_rewrite),
     requestHeaders: readHeaderOperations(value.request_headers),
     responseHeaders: readHeaderOperations(value.response_headers),
   };
@@ -305,6 +351,18 @@ function readHeaderOperations(value: unknown): ProxyRouteHeaderOperations {
     set: readStringMap(value.set),
     add: readStringMap(value.add),
     remove: readStringList(value.remove),
+  };
+}
+
+function readQueryOperations(value: unknown): ProxyRouteQueryOperations {
+  if (!isRecord(value)) {
+    return createEmptyQueryOperations();
+  }
+  return {
+    set: readStringMap(value.set),
+    add: readStringMap(value.add),
+    remove: readStringList(value.remove),
+    removePrefixes: readStringList(value.remove_prefixes),
   };
 }
 
@@ -390,6 +448,10 @@ function writeRouteAction(action: ProxyRouteAction): JSONRecord {
   if (action.pathRewrite && action.pathRewrite.prefix.trim()) {
     out.path_rewrite = { prefix: action.pathRewrite.prefix.trim() };
   }
+  const queryRewrite = writeQueryOperations(action.queryRewrite);
+  if (queryRewrite) {
+    out.query_rewrite = queryRewrite;
+  }
   const requestHeaders = writeHeaderOperations(action.requestHeaders);
   if (requestHeaders) {
     out.request_headers = requestHeaders;
@@ -414,6 +476,27 @@ function writeHeaderOperations(ops: ProxyRouteHeaderOperations): JSONRecord | nu
   const remove = ops.remove.map((item) => item.trim()).filter(Boolean);
   if (remove.length > 0) {
     out.remove = remove;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function writeQueryOperations(ops: ProxyRouteQueryOperations): JSONRecord | null {
+  const out: JSONRecord = {};
+  const set = writeStringMap(ops.set);
+  if (set) {
+    out.set = set;
+  }
+  const add = writeStringMap(ops.add);
+  if (add) {
+    out.add = add;
+  }
+  const remove = ops.remove.map((item) => item.trim()).filter(Boolean);
+  if (remove.length > 0) {
+    out.remove = remove;
+  }
+  const removePrefixes = ops.removePrefixes.map((item) => item.trim()).filter(Boolean);
+  if (removePrefixes.length > 0) {
+    out.remove_prefixes = removePrefixes;
   }
   return Object.keys(out).length > 0 ? out : null;
 }
