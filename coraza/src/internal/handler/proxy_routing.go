@@ -69,6 +69,7 @@ type ProxyRouteAction struct {
 	HashKey         string                      `json:"hash_key,omitempty"`
 	HostRewrite     string                      `json:"host_rewrite,omitempty"`
 	PathRewrite     *ProxyRoutePathRewrite      `json:"path_rewrite,omitempty"`
+	QueryRewrite    *ProxyRouteQueryOperations  `json:"query_rewrite,omitempty"`
 	RequestHeaders  *ProxyRouteHeaderOperations `json:"request_headers,omitempty"`
 	ResponseHeaders *ProxyRouteHeaderOperations `json:"response_headers,omitempty"`
 }
@@ -81,6 +82,13 @@ type ProxyRouteHeaderOperations struct {
 	Set    map[string]string `json:"set,omitempty"`
 	Add    map[string]string `json:"add,omitempty"`
 	Remove []string          `json:"remove,omitempty"`
+}
+
+type ProxyRouteQueryOperations struct {
+	Set            map[string]string `json:"set,omitempty"`
+	Add            map[string]string `json:"add,omitempty"`
+	Remove         []string          `json:"remove,omitempty"`
+	RemovePrefixes []string          `json:"remove_prefixes,omitempty"`
 }
 
 type ProxyDefaultRoute struct {
@@ -102,9 +110,11 @@ type proxyRouteDecision struct {
 	RouteName           string
 	OriginalHost        string
 	OriginalPath        string
+	OriginalQuery       string
 	RewrittenHost       string
 	RewrittenPath       string
 	RewrittenRawPath    string
+	RewrittenQuery      string
 	SelectedUpstream    string
 	SelectedUpstreamURL string
 	Target              *url.URL
@@ -121,8 +131,10 @@ type proxyRouteDryRunResult struct {
 	RouteName           string `json:"route_name,omitempty"`
 	OriginalHost        string `json:"original_host,omitempty"`
 	OriginalPath        string `json:"original_path,omitempty"`
+	OriginalQuery       string `json:"original_query,omitempty"`
 	RewrittenHost       string `json:"rewritten_host,omitempty"`
 	RewrittenPath       string `json:"rewritten_path,omitempty"`
+	RewrittenQuery      string `json:"rewritten_query,omitempty"`
 	SelectedUpstream    string `json:"selected_upstream,omitempty"`
 	SelectedUpstreamURL string `json:"selected_upstream_url,omitempty"`
 	FinalURL            string `json:"final_url,omitempty"`
@@ -168,6 +180,7 @@ func normalizeProxyRouteAction(in ProxyRouteAction) ProxyRouteAction {
 	out.HashKey = strings.TrimSpace(out.HashKey)
 	out.HostRewrite = strings.TrimSpace(out.HostRewrite)
 	out.PathRewrite = normalizeProxyRoutePathRewrite(out.PathRewrite)
+	out.QueryRewrite = normalizeProxyRouteQueryOperations(out.QueryRewrite)
 	out.RequestHeaders = normalizeProxyRouteHeaderOperations(out.RequestHeaders)
 	out.ResponseHeaders = normalizeProxyRouteHeaderOperations(out.ResponseHeaders)
 	return out
@@ -241,6 +254,76 @@ func normalizeProxyRouteHeaderOperations(in *ProxyRouteHeaderOperations) *ProxyR
 		}
 	}
 	if out.Set == nil && out.Add == nil && len(out.Remove) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeProxyRouteQueryOperations(in *ProxyRouteQueryOperations) *ProxyRouteQueryOperations {
+	if in == nil {
+		return nil
+	}
+	out := &ProxyRouteQueryOperations{
+		Set: make(map[string]string, len(in.Set)),
+		Add: make(map[string]string, len(in.Add)),
+	}
+	for key, value := range in.Set {
+		nextKey := strings.TrimSpace(key)
+		if nextKey == "" {
+			continue
+		}
+		out.Set[nextKey] = value
+	}
+	for key, value := range in.Add {
+		nextKey := strings.TrimSpace(key)
+		if nextKey == "" {
+			continue
+		}
+		out.Add[nextKey] = value
+	}
+	if len(out.Set) == 0 {
+		out.Set = nil
+	}
+	if len(out.Add) == 0 {
+		out.Add = nil
+	}
+	if len(in.Remove) > 0 {
+		out.Remove = make([]string, 0, len(in.Remove))
+		seen := map[string]struct{}{}
+		for _, key := range in.Remove {
+			nextKey := strings.TrimSpace(key)
+			if nextKey == "" {
+				continue
+			}
+			if _, ok := seen[nextKey]; ok {
+				continue
+			}
+			seen[nextKey] = struct{}{}
+			out.Remove = append(out.Remove, nextKey)
+		}
+		if len(out.Remove) == 0 {
+			out.Remove = nil
+		}
+	}
+	if len(in.RemovePrefixes) > 0 {
+		out.RemovePrefixes = make([]string, 0, len(in.RemovePrefixes))
+		seen := map[string]struct{}{}
+		for _, prefix := range in.RemovePrefixes {
+			nextPrefix := strings.TrimSpace(prefix)
+			if nextPrefix == "" {
+				continue
+			}
+			if _, ok := seen[nextPrefix]; ok {
+				continue
+			}
+			seen[nextPrefix] = struct{}{}
+			out.RemovePrefixes = append(out.RemovePrefixes, nextPrefix)
+		}
+		if len(out.RemovePrefixes) == 0 {
+			out.RemovePrefixes = nil
+		}
+	}
+	if out.Set == nil && out.Add == nil && len(out.Remove) == 0 && len(out.RemovePrefixes) == 0 {
 		return nil
 	}
 	return out
@@ -428,6 +511,11 @@ func validateProxyRouteAction(action ProxyRouteAction, cfg ProxyRulesConfig, nam
 			return fmt.Errorf("%s.path_rewrite.prefix must start with '/'", field)
 		}
 	}
+	if action.QueryRewrite != nil {
+		if err := validateProxyRouteQueryOperations(*action.QueryRewrite, field+".query_rewrite"); err != nil {
+			return err
+		}
+	}
 	if action.RequestHeaders != nil {
 		if err := validateProxyRouteHeaderOperations(*action.RequestHeaders, field+".request_headers", proxyRouteRestrictedHeaders, "route request_headers"); err != nil {
 			return err
@@ -466,6 +554,43 @@ func validateProxyRouteHeaderOperations(ops ProxyRouteHeaderOperations, field st
 			return fmt.Errorf("%s.remove.%s conflicts with %s.%s", field, name, field, prev)
 		}
 		seen[name] = "remove"
+	}
+	return nil
+}
+
+func validateProxyRouteQueryOperations(ops ProxyRouteQueryOperations, field string) error {
+	seen := map[string]string{}
+	for key := range ops.Set {
+		nextKey := strings.TrimSpace(key)
+		if nextKey == "" {
+			return fmt.Errorf("%s.set: query key is required", field)
+		}
+		seen[nextKey] = "set"
+	}
+	for key := range ops.Add {
+		nextKey := strings.TrimSpace(key)
+		if nextKey == "" {
+			return fmt.Errorf("%s.add: query key is required", field)
+		}
+		if prev, ok := seen[nextKey]; ok {
+			return fmt.Errorf("%s.add.%s conflicts with %s.%s", field, nextKey, field, prev)
+		}
+		seen[nextKey] = "add"
+	}
+	for _, key := range ops.Remove {
+		nextKey := strings.TrimSpace(key)
+		if nextKey == "" {
+			return fmt.Errorf("%s.remove: query key is required", field)
+		}
+		if prev, ok := seen[nextKey]; ok {
+			return fmt.Errorf("%s.remove.%s conflicts with %s.%s", field, nextKey, field, prev)
+		}
+		seen[nextKey] = "remove"
+	}
+	for _, prefix := range ops.RemovePrefixes {
+		if strings.TrimSpace(prefix) == "" {
+			return fmt.Errorf("%s.remove_prefixes: query prefix is required", field)
+		}
 	}
 	return nil
 }
@@ -621,6 +746,9 @@ func appendProxyRouteLogFields(evt map[string]any, req *http.Request) {
 	if decision.OriginalPath != "" {
 		evt["original_path"] = decision.OriginalPath
 	}
+	if decision.OriginalQuery != "" {
+		evt["original_query"] = decision.OriginalQuery
+	}
 	evt["route_source"] = string(decision.Source)
 	if decision.RouteName != "" {
 		evt["selected_route"] = decision.RouteName
@@ -636,6 +764,9 @@ func appendProxyRouteLogFields(evt map[string]any, req *http.Request) {
 	}
 	if decision.RewrittenPath != "" {
 		evt["rewritten_path"] = decision.RewrittenPath
+	}
+	if decision.RewrittenQuery != "" {
+		evt["rewritten_query"] = decision.RewrittenQuery
 	}
 }
 
@@ -698,6 +829,7 @@ func buildProxyRouteDecision(req *http.Request, originalHost string, originalPat
 	selectedTarget := orderedTargets[0]
 	rewrittenPath := originalPath
 	rewrittenRawPath := originalRawPath
+	rewrittenQuery := proxyRouteRawQuery(req)
 	if action.PathRewrite != nil {
 		rewrittenPath, err = rewriteProxyRoutePath(originalPath, match, action.PathRewrite.Prefix)
 		if err != nil {
@@ -710,14 +842,22 @@ func buildProxyRouteDecision(req *http.Request, originalHost string, originalPat
 			}
 		}
 	}
+	if action.QueryRewrite != nil {
+		rewrittenQuery, err = rewriteProxyRouteQuery(rewrittenQuery, action.QueryRewrite)
+		if err != nil {
+			return proxyRouteDecision{}, err
+		}
+	}
 	return proxyRouteDecision{
 		Source:              source,
 		RouteName:           routeName,
 		OriginalHost:        originalHost,
 		OriginalPath:        originalPath,
+		OriginalQuery:       proxyRouteRawQuery(req),
 		RewrittenHost:       resolveProxyRouteForwardedHost(originalHost, selectedTarget.Target.Host, action.HostRewrite),
 		RewrittenPath:       rewrittenPath,
 		RewrittenRawPath:    rewrittenRawPath,
+		RewrittenQuery:      rewrittenQuery,
 		SelectedUpstream:    selectedTarget.Name,
 		SelectedUpstreamURL: selectedTarget.Target.String(),
 		Target:              cloneURL(selectedTarget.Target),
@@ -942,11 +1082,11 @@ func applyProxyRouteHeaders(header http.Header, ops ProxyRouteHeaderOperations) 
 	}
 }
 
-func rewriteProxyOutgoingURL(out *http.Request, target *url.URL, rewrittenPath string, rewrittenRawPath string) {
+func rewriteProxyOutgoingURL(out *http.Request, target *url.URL, rewrittenPath string, rewrittenRawPath string, rewrittenQuery string) {
 	if out == nil || out.URL == nil {
 		return
 	}
-	rewriteProxyTargetURL(out.URL, target, rewrittenPath, rewrittenRawPath, out.URL.RawQuery)
+	rewriteProxyTargetURL(out.URL, target, rewrittenPath, rewrittenRawPath, rewrittenQuery)
 }
 
 func rewriteProxyTargetURL(out *url.URL, target *url.URL, rewrittenPath string, rewrittenRawPath string, rawQuery string) {
@@ -963,6 +1103,36 @@ func rewriteProxyTargetURL(out *url.URL, target *url.URL, rewrittenPath string, 
 	} else {
 		out.RawQuery = targetQuery + "&" + reqURL.RawQuery
 	}
+}
+
+func rewriteProxyRouteQuery(rawQuery string, ops *ProxyRouteQueryOperations) (string, error) {
+	if ops == nil {
+		return rawQuery, nil
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return "", fmt.Errorf("query_rewrite parse error: %w", err)
+	}
+	for _, key := range ops.Remove {
+		values.Del(key)
+	}
+	if len(ops.RemovePrefixes) > 0 {
+		for key := range values {
+			for _, prefix := range ops.RemovePrefixes {
+				if strings.HasPrefix(key, prefix) {
+					values.Del(key)
+					break
+				}
+			}
+		}
+	}
+	for key, value := range ops.Set {
+		values.Set(key, value)
+	}
+	for key, value := range ops.Add {
+		values.Add(key, value)
+	}
+	return values.Encode(), nil
 }
 
 func joinProxyURLPath(a, b *url.URL) (string, string) {
@@ -1006,6 +1176,13 @@ func proxyRouteRawPath(req *http.Request) string {
 	return req.URL.RawPath
 }
 
+func proxyRouteRawQuery(req *http.Request) string {
+	if req == nil || req.URL == nil {
+		return ""
+	}
+	return req.URL.RawQuery
+}
+
 func proxyRouteDryRun(cfg ProxyRulesConfig, host string, path string) (proxyRouteDryRunResult, error) {
 	return proxyRouteDryRunWithHealth(cfg, host, path, nil)
 }
@@ -1032,20 +1209,22 @@ func proxyRouteDryRunWithHealth(cfg ProxyRulesConfig, host string, path string, 
 		RouteName:           decision.RouteName,
 		OriginalHost:        decision.OriginalHost,
 		OriginalPath:        decision.OriginalPath,
+		OriginalQuery:       decision.OriginalQuery,
 		RewrittenHost:       decision.RewrittenHost,
 		RewrittenPath:       decision.RewrittenPath,
+		RewrittenQuery:      decision.RewrittenQuery,
 		SelectedUpstream:    decision.SelectedUpstream,
 		SelectedUpstreamURL: decision.SelectedUpstreamURL,
-		FinalURL:            finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath),
+		FinalURL:            finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath, decision.RewrittenQuery),
 	}, nil
 }
 
-func finalProxyRouteURL(target *url.URL, rewrittenPath string, rewrittenRawPath string) string {
+func finalProxyRouteURL(target *url.URL, rewrittenPath string, rewrittenRawPath string, rewrittenQuery string) string {
 	if target == nil {
 		return ""
 	}
 	out := cloneURL(target)
-	rewriteProxyTargetURL(out, target, rewrittenPath, rewrittenRawPath, "")
+	rewriteProxyTargetURL(out, target, rewrittenPath, rewrittenRawPath, rewrittenQuery)
 	return out.String()
 }
 

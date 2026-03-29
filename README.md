@@ -243,19 +243,21 @@ Phase-1/2.1/2.2/2.3 routing in `conf/proxy.json`:
 - `action.hash_policy` / `action.hash_key` override the global hash policy for that route and keep canary selection sticky across requests.
 - `action.host_rewrite` overrides the outbound `Host` header only. It must be a fixed host or `host:port`; schemes and wildcards are rejected. The selected upstream URL does not change. For HTTPS upstreams, SNI still follows the upstream URL and is not rewritten in phase 2.3.
 - `action.path_rewrite.prefix` rewrites only the matched path prefix. It is intended to cover `/servicea/... -> /...`, `/servicea/... -> /servicea/...`, and `/servicea/... -> /service-a/...`. The proxy preserves escaped suffixes such as `%2F` when forwarding, and it does not apply extra path cleaning. Regex path routes do not support `action.path_rewrite.prefix` in phase 2.2.
+- `action.query_rewrite` rewrites the forwarded query string after route selection. Operations run in `remove`, `remove_prefixes`, `set`, then `add` order. Route matching still ignores query strings, so a query rewrite never changes which route wins.
 - `action.request_headers` supports outbound request-header `remove`, `set`, then `add`. `Host`, `X-Forwarded-*`, and hop-by-hop headers are rejected for all three operations.
 - `action.response_headers` supports upstream response-header `remove`, `set`, then `add`. `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `Trailer`, `Keep-Alive`, `TE`, `Proxy-Connection`, and `Set-Cookie` are rejected.
 - `POST /mamotama-api/proxy-rules:dry-run` uses the same route selection, upstream resolution, and path rewrite logic as runtime proxying. When you validate unsaved raw config, dry-run cannot reuse the current runtime health state, so global upstream fallback reflects the provided config rather than live backend health.
+- Route-related dry-run results and logs now expose `original_query` and `rewritten_query` alongside host/path information.
 - If no route matches, `default_route` is used. If `default_route` is unset, the proxy falls back to legacy `upstream_url` / `upstreams[]`.
 - Route priority stays explicit even with regex routes. There is no implicit specificity ordering between `exact`, `prefix`, and `regex`; the lowest `priority` value still wins first.
 - `retry_attempts`, `retry_backoff_ms`, `retry_per_try_timeout_ms`, `retry_status_codes`, and `retry_methods` control idempotent upstream retries.
 - `passive_health_enabled`, `passive_failure_threshold`, `passive_unhealthy_status_codes`, `circuit_breaker_enabled`, `circuit_breaker_open_sec`, and `circuit_breaker_half_open_requests` add passive failure tracking and circuit breaking on top of active health checks.
-- Still out of scope after phase 2.3: response body rewrite, mirror routing, query rewrite.
+- Still out of scope after phase 2.4: response body rewrite and mirror routing.
 
 Route-related logs include:
 - `proxy_route`
 - `original_host`, `original_path`
-- `rewritten_host`, `rewritten_path`
+- `original_query`, `rewritten_host`, `rewritten_path`, `rewritten_query`
 - `selected_route`, `selected_upstream`, `selected_upstream_url`
 
 `rewritten_host` is the outbound `Host` header after route processing. `selected_upstream_url` remains the actual target URL.
@@ -298,6 +300,12 @@ Phase-1/2.1/2.2/2.3 route config example:
         "hash_key": "X-User",
         "host_rewrite": "service-a.internal",
         "path_rewrite": { "prefix": "/service-a/" },
+        "query_rewrite": {
+          "remove": ["debug"],
+          "remove_prefixes": ["utm_"],
+          "set": { "lang": "ja" },
+          "add": { "preview": "1" }
+        },
         "request_headers": {
           "set": { "X-Service": "service-a" },
           "add": { "X-Route": "service-a-prefix" },
