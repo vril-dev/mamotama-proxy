@@ -11,71 +11,10 @@ proxy_api_need_cmd jq
 proxy_api_need_cmd python3
 
 PROXY_ECHO_PORT="${PROXY_ECHO_PORT:-18080}"
+PROXY_ECHO_URL="${PROXY_ECHO_URL:-http://proxy-echo:${PROXY_ECHO_PORT}}"
 PROTECTED_HOST="${PROTECTED_HOST:-protected.example.test}"
-proxy_echo_log="$(mktemp /tmp/proxy_echo.XXXXXX.log)"
 proxy_route_headers="/tmp/proxy_route_headers.txt"
 proxy_route_body="/tmp/proxy_route_body.json"
-
-cleanup() {
-  if [[ -n "${proxy_echo_pid:-}" ]] && kill -0 "${proxy_echo_pid}" >/dev/null 2>&1; then
-    kill "${proxy_echo_pid}" >/dev/null 2>&1 || true
-    wait "${proxy_echo_pid}" >/dev/null 2>&1 || true
-  fi
-}
-trap cleanup EXIT
-
-python3 - "${PROXY_ECHO_PORT}" >"${proxy_echo_log}" 2>&1 <<'PY' &
-import json
-import sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-port = int(sys.argv[1])
-
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self._respond()
-
-    def do_HEAD(self):
-        self._respond(send_body=False)
-
-    def log_message(self, _format, *_args):
-        return
-
-    def _respond(self, send_body=True):
-        payload = {
-            "method": self.command,
-            "path": self.path,
-            "host": self.headers.get("Host", ""),
-            "x_service": self.headers.get("X-Service", ""),
-            "x_route": self.headers.get("X-Route", ""),
-        }
-        body = json.dumps(payload).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("X-Upstream-Echo", "1")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        if send_body:
-            self.wfile.write(body)
-
-
-ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
-PY
-proxy_echo_pid=$!
-
-for _ in $(seq 1 20); do
-  code="$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PROXY_ECHO_PORT}/healthz" || true)"
-  if [[ "${code}" == "200" ]]; then
-    break
-  fi
-  sleep 0.5
-done
-if [[ "${code:-}" != "200" ]]; then
-  echo "[proxy-smoke][ERROR] echo upstream failed to start" >&2
-  cat "${proxy_echo_log}" >&2 || true
-  exit 1
-fi
 
 proxy_api_wait_health
 
@@ -126,7 +65,7 @@ fi
 
 route_raw="$(jq -n \
   --arg protectedHost "${PROTECTED_HOST}" \
-  --arg upstream "http://host.docker.internal:${PROXY_ECHO_PORT}" \
+  --arg upstream "${PROXY_ECHO_URL}" \
   '{
     upstream_url: $upstream,
     upstreams: [
@@ -208,7 +147,7 @@ if [[ "${route_dry_run_code}" != "200" ]]; then
   exit 1
 fi
 if ! jq -e \
-  --arg upstream "http://host.docker.internal:${PROXY_ECHO_PORT}" \
+  --arg upstream "${PROXY_ECHO_URL}" \
   '.dry_run.source == "route"
    and .dry_run.route_name == "service-a-prefix"
    and .dry_run.rewritten_host == "service-a.internal"

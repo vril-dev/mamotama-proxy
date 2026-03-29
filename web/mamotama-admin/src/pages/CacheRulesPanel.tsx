@@ -75,7 +75,7 @@ export default function CacheRulePanel() {
   const [storeEtag, setStoreEtag] = useState<string | null>(null);
   const [storeConfig, setStoreConfig] = useState<CacheStoreConfig>({
     enabled: true,
-    store_dir: "/var/lib/mamotama/cache",
+    store_dir: "logs/coraza/cache",
     max_bytes: 2 * 1024 * 1024 * 1024,
   });
   const [storeStats, setStoreStats] = useState<CacheStoreStats>({});
@@ -115,7 +115,7 @@ export default function CacheRulePanel() {
       setStoreEtag(store.etag ?? null);
       const nextStore = store.store ?? {
         enabled: true,
-        store_dir: "/var/lib/mamotama/cache",
+        store_dir: "logs/coraza/cache",
         max_bytes: 2 * 1024 * 1024 * 1024,
       };
       setStoreConfig(nextStore);

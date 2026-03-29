@@ -27,7 +27,7 @@ import (
 
 const (
 	responseCacheConfigBlobKey    = "cache_store"
-	defaultResponseCacheStoreDir  = "/var/lib/mamotama/cache"
+	defaultResponseCacheStoreDir  = "logs/coraza/cache"
 	defaultResponseCacheMaxBytes  = int64(2 * 1024 * 1024 * 1024)
 	proxyResponseCacheHeader      = "X-Mamotama-Cache"
 	proxyResponseCacheRequestID   = "X-Request-ID"
