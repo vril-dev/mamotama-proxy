@@ -181,6 +181,8 @@ func main() {
 					config.APIBasePath + "/crs-rule-sets",
 					config.APIBasePath + "/bypass-rules",
 					config.APIBasePath + "/cache-rules",
+					config.APIBasePath + "/cache-store",
+					config.APIBasePath + "/cache-store:clear",
 					config.APIBasePath + "/country-block-rules",
 					config.APIBasePath + "/rate-limit-rules",
 					config.APIBasePath + "/notifications",
@@ -220,6 +222,10 @@ func main() {
 		api.GET("/cache-rules", handler.GetCacheRules)
 		api.POST("/cache-rules:validate", handler.ValidateCacheRules)
 		api.PUT("/cache-rules", handler.PutCacheRules)
+		api.GET("/cache-store", handler.GetResponseCacheStore)
+		api.POST("/cache-store:validate", handler.ValidateResponseCacheStore)
+		api.PUT("/cache-store", handler.PutResponseCacheStore)
+		api.POST("/cache-store:clear", handler.ClearResponseCacheStore)
 		api.GET("/country-block-rules", handler.GetCountryBlockRules)
 		api.POST("/country-block-rules:validate", handler.ValidateCountryBlockRules)
 		api.PUT("/country-block-rules", handler.PutCountryBlockRules)
@@ -248,6 +254,12 @@ func main() {
 	}
 
 	handler.RegisterAdminUIRoutes(r)
+	if err := handler.InitResponseCacheRuntime(config.CacheStoreFile); err != nil {
+		log.Fatalf("[CACHE][FATAL] failed to initialize response cache runtime: %v", err)
+	}
+	if err := handler.SyncResponseCacheStoreStorage(); err != nil {
+		log.Printf("[CACHE][DB][WARN] sync failed (fallback=file): %v", err)
+	}
 
 	r.NoRoute(func(c *gin.Context) {
 		p := c.Request.URL.Path

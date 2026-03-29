@@ -13,6 +13,7 @@ import (
 var (
 	ConfigFile                string
 	ProxyConfigFile           string
+	CacheStoreFile            string
 	UIBasePath                string
 	ProxyRollbackMax          int
 	ListenAddr                string
@@ -112,6 +113,10 @@ func applyAppConfig(cfg appConfigFile) {
 	ProxyConfigFile = strings.TrimSpace(cfg.Paths.ProxyConfigFile)
 	if ProxyConfigFile == "" {
 		ProxyConfigFile = "conf/proxy.json"
+	}
+	CacheStoreFile = strings.TrimSpace(cfg.Paths.CacheStoreFile)
+	if CacheStoreFile == "" {
+		CacheStoreFile = "conf/cache-store.json"
 	}
 	UIBasePath = strings.TrimSpace(cfg.Admin.UIBasePath)
 	if UIBasePath == "" {

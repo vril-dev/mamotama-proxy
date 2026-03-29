@@ -223,7 +223,7 @@ You can still edit source under `web/mamotama-admin/` and rebuild assets for emb
 | `/notifications` | View/edit aggregate notification config directly (`conf/notifications.conf`) |
 | `/bot-defense` | View/edit bot-defense config directly (`bot-defense.conf`) |
 | `/semantic` | View/edit semantic security config directly (`semantic.conf`) |
-| `/cache-rules` | Visual + raw editing for cache rules (`cache.conf`), with Validate/Save |
+| `/cache-rules` | Visual + raw editing for cache rules (`cache.conf`) plus internal cache store controls (`conf/cache-store.json`) |
 | `/proxy-rules` | Structured + raw editing for upstreams/routes/default route, plus validate/probe/dry-run/update/rollback for full `conf/proxy.json` |
 
 Upstream failure response behavior:
@@ -687,6 +687,10 @@ This keeps external provider payload small by sending one selected event at a ti
 | GET | `/mamotama-api/cache-rules` | Return `cache.conf` raw + structured data with `ETag` |
 | POST | `/mamotama-api/cache-rules:validate` | Validate cache config (no save) |
 | PUT | `/mamotama-api/cache-rules` | Save `cache.conf` (`If-Match` optimistic lock via `ETag`) |
+| GET | `/mamotama-api/cache-store` | Return internal cache store settings and runtime counters |
+| POST | `/mamotama-api/cache-store:validate` | Validate internal cache store settings (no save) |
+| PUT | `/mamotama-api/cache-store` | Save `conf/cache-store.json` (`If-Match` optimistic lock via `ETag`) |
+| POST | `/mamotama-api/cache-store:clear` | Remove all cached bodies and metadata |
 | GET | `/mamotama-api/proxy-rules` | Get current proxy transport + route config (`conf/proxy.json`) |
 | POST | `/mamotama-api/proxy-rules:validate` | Validate proxy transport + route config (no save) |
 | POST | `/mamotama-api/proxy-rules:probe` | TCP probe the current primary/fallback upstream target |
@@ -1100,6 +1104,7 @@ You can dynamically configure cache target paths and TTL.
 
 Cache config is stored in `/data/conf/cache.conf`.
 Hot reload is supported; changes apply right after saving the file.
+Internal cache store settings are stored separately in `/data/conf/cache-store.json`.
 
 #### Example
 
@@ -1133,7 +1138,10 @@ Field details:
 ### Behavior Summary
 
 - Go side sets `X-Mamotama-Cacheable` and `X-Accel-Expires` on responses matching cache rules
-- these headers can be consumed by external cache/CDN layers if needed
+- eligible `GET` responses are also stored in the internal file-backed cache under `cache-store.json.store_dir`
+- default internal cache capacity is `2 GiB` (`max_bytes=2147483648`)
+- `POST /mamotama-api/cache-store:clear` clears the full internal cache immediately
+- these headers can still be consumed by external cache/CDN layers if needed
 - Requests with auth headers, cookies, or API paths are non-cacheable by default
 - Upstream responses containing `Set-Cookie` are not stored (to prevent shared-cache leakage)
 
@@ -1142,8 +1150,7 @@ Field details:
 Check response headers:
 - `X-Mamotama-Cacheable: 1`
 - `X-Accel-Expires: <seconds>`
-
-By default this stack does not include an internal HTTP cache layer.
+- `X-Mamotama-Cache: MISS` on first fill, `X-Mamotama-Cache: HIT` on cache hits
 
 ---
 
