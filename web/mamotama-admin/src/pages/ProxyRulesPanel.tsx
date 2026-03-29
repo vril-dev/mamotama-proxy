@@ -696,6 +696,56 @@ function RouteEditorCard({
         </Field>
       </div>
 
+      <div className="grid gap-3 md:grid-cols-4">
+        <Field label="Canary upstream" hint="Optional secondary upstream for weighted canary routing.">
+          <input
+            className={inputClass}
+            value={route.action.canaryUpstream}
+            onChange={(e) => setAction({ ...route.action, canaryUpstream: e.target.value })}
+            placeholder="service-a-canary"
+          />
+        </Field>
+        <Field label="Canary %" hint="1-99 when canary is set.">
+          <input
+            className={inputClass}
+            type="number"
+            min={1}
+            max={99}
+            value={route.action.canaryWeightPercent}
+            onChange={(e) => setAction({ ...route.action, canaryWeightPercent: Number(e.target.value || 10) })}
+            disabled={!route.action.canaryUpstream.trim()}
+          />
+        </Field>
+        <Field label="Hash policy" hint="Optional sticky/hash routing policy for this route.">
+          <select
+            className={inputClass}
+            value={route.action.hashPolicy}
+            onChange={(e) =>
+              setAction({
+                ...route.action,
+                hashPolicy: e.target.value as "" | "client_ip" | "header" | "cookie" | "jwt_sub",
+                hashKey: e.target.value === "header" || e.target.value === "cookie" ? route.action.hashKey : "",
+              })
+            }
+          >
+            <option value="">none</option>
+            <option value="client_ip">client_ip</option>
+            <option value="header">header</option>
+            <option value="cookie">cookie</option>
+            <option value="jwt_sub">jwt_sub</option>
+          </select>
+        </Field>
+        <Field label="Hash key" hint="Required only for header/cookie hash.">
+          <input
+            className={inputClass}
+            value={route.action.hashKey}
+            onChange={(e) => setAction({ ...route.action, hashKey: e.target.value })}
+            placeholder={route.action.hashPolicy === "cookie" ? "session" : "X-User"}
+            disabled={route.action.hashPolicy !== "header" && route.action.hashPolicy !== "cookie"}
+          />
+        </Field>
+      </div>
+
       <div className="grid gap-3 xl:grid-cols-2">
         <HeaderOperationsEditor
           title="Request header operations"
