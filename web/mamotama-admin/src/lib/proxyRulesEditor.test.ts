@@ -33,6 +33,10 @@ test("parseProxyRulesEditor reads route fields without dropping unrelated config
         },
         "action": {
           "upstream": "service-a",
+          "canary_upstream": "http://canary.internal:8080",
+          "canary_weight_percent": 15,
+          "hash_policy": "header",
+          "hash_key": "X-User",
           "host_rewrite": "service-a.internal",
           "path_rewrite": { "prefix": "/service-a/" },
           "request_headers": {
@@ -59,6 +63,9 @@ test("parseProxyRulesEditor reads route fields without dropping unrelated config
   assert.equal(parsed.state.routes.length, 1);
   assert.equal(parsed.state.routes[0]?.path?.type, "prefix");
   assert.equal(parsed.state.routes[0]?.action.hostRewrite, "service-a.internal");
+  assert.equal(parsed.state.routes[0]?.action.canaryUpstream, "http://canary.internal:8080");
+  assert.equal(parsed.state.routes[0]?.action.hashPolicy, "header");
+  assert.equal(parsed.state.routes[0]?.action.hashKey, "X-User");
   assert.equal(parsed.state.routes[0]?.action.requestHeaders.set["X-Service"], "service-a");
   assert.equal(parsed.state.defaultRoute?.action.upstream, "http://fallback.internal:8080");
 });
@@ -89,6 +96,10 @@ test("serializeProxyRulesEditor updates routing fields and preserves unrelated k
         path: { type: "prefix", value: "/servicea/" },
         action: {
           upstream: "service-a",
+          canaryUpstream: "service-a-canary",
+          canaryWeightPercent: 20,
+          hashPolicy: "cookie",
+          hashKey: "session",
           hostRewrite: "",
           pathRewrite: { prefix: "/service-a/" },
           requestHeaders: {
@@ -115,6 +126,9 @@ test("serializeProxyRulesEditor updates routing fields and preserves unrelated k
   assert.equal(reparsed.base.max_idle_conns, 10);
   assert.equal(reparsed.base.upstream_url, undefined);
   assert.equal(reparsed.state.upstreams[0]?.name, "service-a");
+  assert.equal(reparsed.state.routes[0]?.action.canaryUpstream, "service-a-canary");
+  assert.equal(reparsed.state.routes[0]?.action.hashPolicy, "cookie");
+  assert.equal(reparsed.state.routes[0]?.action.hashKey, "session");
   assert.equal(reparsed.state.routes[0]?.action.pathRewrite?.prefix, "/service-a/");
   assert.equal(reparsed.state.routes[0]?.action.responseHeaders.add["Cache-Control"], "no-store");
   assert.equal(reparsed.state.defaultRoute?.action.upstream, "http://fallback.internal:8080");

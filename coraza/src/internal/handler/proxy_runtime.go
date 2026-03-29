@@ -45,23 +45,36 @@ const (
 )
 
 type ProxyRulesConfig struct {
-	UpstreamURL           string             `json:"upstream_url"`
-	Upstreams             []ProxyUpstream    `json:"upstreams,omitempty"`
-	LoadBalancingStrategy string             `json:"load_balancing_strategy,omitempty"`
-	Routes                []ProxyRoute       `json:"routes,omitempty"`
-	DefaultRoute          *ProxyDefaultRoute `json:"default_route,omitempty"`
-	DialTimeout           int                `json:"dial_timeout"`
-	ResponseHeaderTimeout int                `json:"response_header_timeout"`
-	IdleConnTimeout       int                `json:"idle_conn_timeout"`
-	MaxIdleConns          int                `json:"max_idle_conns"`
-	MaxIdleConnsPerHost   int                `json:"max_idle_conns_per_host"`
-	MaxConnsPerHost       int                `json:"max_conns_per_host"`
-	ForceHTTP2            bool               `json:"force_http2"`
-	DisableCompression    bool               `json:"disable_compression"`
-	ExpectContinueTimeout int                `json:"expect_continue_timeout"`
-	TLSInsecureSkipVerify bool               `json:"tls_insecure_skip_verify"`
-	TLSClientCert         string             `json:"tls_client_cert"`
-	TLSClientKey          string             `json:"tls_client_key"`
+	UpstreamURL                    string             `json:"upstream_url"`
+	Upstreams                      []ProxyUpstream    `json:"upstreams,omitempty"`
+	LoadBalancingStrategy          string             `json:"load_balancing_strategy,omitempty"`
+	HashPolicy                     string             `json:"hash_policy,omitempty"`
+	HashKey                        string             `json:"hash_key,omitempty"`
+	Routes                         []ProxyRoute       `json:"routes,omitempty"`
+	DefaultRoute                   *ProxyDefaultRoute `json:"default_route,omitempty"`
+	DialTimeout                    int                `json:"dial_timeout"`
+	ResponseHeaderTimeout          int                `json:"response_header_timeout"`
+	IdleConnTimeout                int                `json:"idle_conn_timeout"`
+	MaxIdleConns                   int                `json:"max_idle_conns"`
+	MaxIdleConnsPerHost            int                `json:"max_idle_conns_per_host"`
+	MaxConnsPerHost                int                `json:"max_conns_per_host"`
+	ForceHTTP2                     bool               `json:"force_http2"`
+	DisableCompression             bool               `json:"disable_compression"`
+	ExpectContinueTimeout          int                `json:"expect_continue_timeout"`
+	TLSInsecureSkipVerify          bool               `json:"tls_insecure_skip_verify"`
+	TLSClientCert                  string             `json:"tls_client_cert"`
+	TLSClientKey                   string             `json:"tls_client_key"`
+	RetryAttempts                  int                `json:"retry_attempts,omitempty"`
+	RetryBackoffMS                 int                `json:"retry_backoff_ms,omitempty"`
+	RetryPerTryTimeoutMS           int                `json:"retry_per_try_timeout_ms,omitempty"`
+	RetryStatusCodes               []int              `json:"retry_status_codes,omitempty"`
+	RetryMethods                   []string           `json:"retry_methods,omitempty"`
+	PassiveHealthEnabled           bool               `json:"passive_health_enabled,omitempty"`
+	PassiveFailureThreshold        int                `json:"passive_failure_threshold,omitempty"`
+	PassiveUnhealthyStatusCodes    []int              `json:"passive_unhealthy_status_codes,omitempty"`
+	CircuitBreakerEnabled          bool               `json:"circuit_breaker_enabled,omitempty"`
+	CircuitBreakerOpenSec          int                `json:"circuit_breaker_open_sec,omitempty"`
+	CircuitBreakerHalfOpenRequests int                `json:"circuit_breaker_half_open_requests,omitempty"`
 
 	BufferRequestBody      bool  `json:"buffer_request_body"`
 	MaxResponseBufferBytes int64 `json:"max_response_buffer_bytes"`
@@ -555,6 +568,24 @@ func normalizeAndValidateProxyRules(in ProxyRulesConfig) (ProxyRulesConfig, *url
 	if cfg.FlushIntervalMS < 0 {
 		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("flush_interval_ms must be >= 0")
 	}
+	if cfg.RetryAttempts < 0 {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("retry_attempts must be >= 0")
+	}
+	if cfg.RetryBackoffMS < 0 {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("retry_backoff_ms must be >= 0")
+	}
+	if cfg.RetryPerTryTimeoutMS < 0 {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("retry_per_try_timeout_ms must be >= 0")
+	}
+	if cfg.PassiveFailureThreshold < 0 {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("passive_failure_threshold must be >= 0")
+	}
+	if cfg.CircuitBreakerOpenSec < 0 {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("circuit_breaker_open_sec must be >= 0")
+	}
+	if cfg.CircuitBreakerHalfOpenRequests < 0 {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("circuit_breaker_half_open_requests must be >= 0")
+	}
 	if cfg.HealthCheckInterval <= 0 {
 		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("health_check_interval_sec must be > 0")
 	}
@@ -566,6 +597,21 @@ func normalizeAndValidateProxyRules(in ProxyRulesConfig) (ProxyRulesConfig, *url
 	}
 	if cfg.ErrorHTMLFile != "" && cfg.ErrorRedirectURL != "" {
 		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("error_html_file and error_redirect_url are mutually exclusive")
+	}
+	if err := validateProxyHashPolicy(cfg.HashPolicy, cfg.HashKey, "hash_policy"); err != nil {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
+	}
+	if err := validateProxyRetryStatusCodes(cfg.RetryStatusCodes, "retry_status_codes"); err != nil {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
+	}
+	if err := validateProxyRetryMethods(cfg.RetryMethods, "retry_methods"); err != nil {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
+	}
+	if err := validateProxyRetryConfiguration(cfg); err != nil {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
+	}
+	if err := validateProxyPassiveCircuitConfiguration(cfg); err != nil {
+		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, err
 	}
 	if (cfg.TLSClientCert != "" || cfg.TLSClientKey != "") && !proxyRulesHasHTTPSUpstream(cfg) {
 		return ProxyRulesConfig{}, nil, proxyErrorResponse{}, fmt.Errorf("tls_client_cert and tls_client_key require at least one https upstream")
@@ -618,6 +664,11 @@ func normalizeProxyRulesConfig(in ProxyRulesConfig) ProxyRulesConfig {
 	out.ErrorHTMLFile = strings.TrimSpace(out.ErrorHTMLFile)
 	out.ErrorRedirectURL = strings.TrimSpace(out.ErrorRedirectURL)
 	out.LoadBalancingStrategy = normalizeProxyLoadBalancingStrategy(out.LoadBalancingStrategy)
+	out.HashPolicy = normalizeProxyHashPolicy(out.HashPolicy)
+	out.HashKey = strings.TrimSpace(out.HashKey)
+	out.RetryStatusCodes = normalizeProxyStatusCodeList(out.RetryStatusCodes)
+	out.RetryMethods = normalizeProxyMethodList(out.RetryMethods)
+	out.PassiveUnhealthyStatusCodes = normalizeProxyStatusCodeList(out.PassiveUnhealthyStatusCodes)
 	out.UpstreamURL = strings.TrimSpace(out.UpstreamURL)
 	out.Upstreams = normalizeProxyUpstreams(out.Upstreams)
 	out.Routes = normalizeProxyRoutes(out.Routes)
@@ -764,6 +815,14 @@ func proxyRulesHasHTTPSUpstream(cfg ProxyRulesConfig) bool {
 		if target, ok := proxyDirectRouteTarget(route.Action.Upstream); ok && strings.EqualFold(target.Scheme, "https") {
 			return true
 		}
+		if target, ok := proxyDirectRouteTarget(route.Action.CanaryUpstream); ok && strings.EqualFold(target.Scheme, "https") {
+			return true
+		}
+	}
+	if cfg.DefaultRoute != nil {
+		if target, ok := proxyDirectRouteTarget(cfg.DefaultRoute.Action.CanaryUpstream); ok && strings.EqualFold(target.Scheme, "https") {
+			return true
+		}
 	}
 	return false
 }
@@ -889,34 +948,123 @@ func (d *dynamicProxyTransport) RoundTrip(req *http.Request) (*http.Response, er
 	)
 	req = req.Clone(ctx)
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
-	resp, err := rt.RoundTrip(req)
-	if tracker == nil {
+	decision, _ := proxyRouteDecisionFromContext(req.Context())
+	targets := decision.OrderedTargets
+	if len(targets) == 0 && decision.Target != nil {
+		targets = []proxyRouteTargetCandidate{{
+			Key:     decision.HealthKey,
+			Name:    decision.SelectedUpstream,
+			Target:  cloneURL(decision.Target),
+			Weight:  1,
+			Managed: decision.HealthKey != "",
+		}}
+	}
+	retryPolicy := decision.RetryPolicy
+	maxAttempts := 1
+	if retryPolicy.Enabled() && retryPolicy.AllowsMethod(req.Method) {
+		maxAttempts += retryPolicy.Attempts
+	}
+	if len(targets) > 0 && len(targets) < maxAttempts {
+		maxAttempts = len(targets)
+	}
+	if len(targets) == 0 {
+		resp, err := rt.RoundTrip(req)
 		endProxyTransportSpan(span, resp, err)
 		return resp, err
 	}
-	backendKey, _ := req.Context().Value(ctxKeySelectedUpstream).(string)
-	if backendKey == "" {
-		endProxyTransportSpan(span, resp, err)
-		return resp, err
-	}
-	if err != nil {
-		tracker.ReleaseTarget(backendKey)
-		endProxyTransportSpan(span, nil, err)
-		return nil, err
-	}
-	if resp == nil || resp.Body == nil {
-		tracker.ReleaseTarget(backendKey)
-		endProxyTransportSpan(span, resp, nil)
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		candidate := targets[attempt]
+		attemptReq, cancel, err := cloneProxyRetryRequest(req, decision, candidate, attempt, retryPolicy)
+		if err != nil {
+			if cancel != nil {
+				cancel()
+			}
+			lastErr = err
+			break
+		}
+		if tracker != nil && candidate.Key != "" && !tracker.AcquireTarget(candidate.Key) {
+			if cancel != nil {
+				cancel()
+			}
+			lastErr = fmt.Errorf("backend unavailable for retry target %q", candidate.Name)
+			continue
+		}
+
+		resp, err := rt.RoundTrip(attemptReq)
+		if err != nil {
+			if tracker != nil && candidate.Key != "" {
+				tracker.RecordPassiveFailure(candidate.Key, 0, err)
+				tracker.ReleaseTarget(candidate.Key)
+			}
+			if cancel != nil {
+				cancel()
+			}
+			lastErr = err
+			if attempt+1 < maxAttempts && retryPolicy.Enabled() {
+				if retryPolicy.Backoff > 0 {
+					time.Sleep(retryPolicy.Backoff)
+				}
+				continue
+			}
+			endProxyTransportSpan(span, nil, err)
+			return nil, err
+		}
+
+		shouldRetryStatus := retryPolicy.Enabled() && attempt+1 < maxAttempts && retryPolicy.RetryableStatus(resp.StatusCode)
+		if shouldRetryStatus {
+			if tracker != nil && candidate.Key != "" {
+				tracker.RecordPassiveFailure(candidate.Key, resp.StatusCode, nil)
+				tracker.ReleaseTarget(candidate.Key)
+			}
+			if resp.Body != nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+				_ = resp.Body.Close()
+			}
+			if cancel != nil {
+				cancel()
+			}
+			if retryPolicy.Backoff > 0 {
+				time.Sleep(retryPolicy.Backoff)
+			}
+			lastErr = fmt.Errorf("retryable status code: %d", resp.StatusCode)
+			continue
+		}
+
+		if tracker != nil && candidate.Key != "" {
+			if retryPolicy.RetryableStatus(resp.StatusCode) {
+				tracker.RecordPassiveFailure(candidate.Key, resp.StatusCode, nil)
+			} else {
+				tracker.RecordPassiveSuccess(candidate.Key, resp.StatusCode)
+			}
+		}
+		if resp == nil || resp.Body == nil {
+			if tracker != nil && candidate.Key != "" {
+				tracker.ReleaseTarget(candidate.Key)
+			}
+			if cancel != nil {
+				cancel()
+			}
+			endProxyTransportSpan(span, resp, nil)
+			return resp, nil
+		}
+		resp.Body = &proxyTrackedReadCloser{
+			ReadCloser: resp.Body,
+			release: func() {
+				if tracker != nil && candidate.Key != "" {
+					tracker.ReleaseTarget(candidate.Key)
+				}
+				if cancel != nil {
+					cancel()
+				}
+			},
+			span: span,
+		}
 		return resp, nil
 	}
-	resp.Body = &proxyTrackedReadCloser{
-		ReadCloser: resp.Body,
-		release: func() {
-			tracker.ReleaseTarget(backendKey)
-		},
-		span: span,
-	}
-	return resp, nil
+	endProxyTransportSpan(span, nil, lastErr)
+	return nil, lastErr
 }
 
 func (d *dynamicProxyTransport) Update(cfg ProxyRulesConfig) error {
@@ -941,6 +1089,35 @@ type proxyTrackedReadCloser struct {
 	once    sync.Once
 	release func()
 	span    oteltrace.Span
+}
+
+func cloneProxyRetryRequest(req *http.Request, decision proxyRouteDecision, candidate proxyRouteTargetCandidate, attempt int, retryPolicy proxyRetryPolicy) (*http.Request, context.CancelFunc, error) {
+	if req == nil {
+		return nil, nil, fmt.Errorf("request is required")
+	}
+	out := req.Clone(req.Context())
+	if attempt > 0 && req.Body != nil {
+		if req.GetBody == nil {
+			return nil, nil, fmt.Errorf("request body is not rewindable for retry")
+		}
+		body, err := req.GetBody()
+		if err != nil {
+			return nil, nil, err
+		}
+		out.Body = body
+	}
+	if out.URL == nil {
+		out.URL = &url.URL{}
+	}
+	rewriteProxyOutgoingURL(out, candidate.Target, decision.RewrittenPath, decision.RewrittenRawPath)
+	out.Host = decision.RewrittenHost
+	var cancel context.CancelFunc
+	if retryPolicy.PerTryTimeout > 0 {
+		ctx, nextCancel := context.WithTimeout(out.Context(), retryPolicy.PerTryTimeout)
+		out = out.WithContext(ctx)
+		cancel = nextCancel
+	}
+	return out, cancel, nil
 }
 
 func (r *proxyTrackedReadCloser) Close() error {
@@ -1186,6 +1363,10 @@ type upstreamBackendStatus struct {
 	Enabled             bool   `json:"enabled"`
 	Healthy             bool   `json:"healthy"`
 	InFlight            int    `json:"inflight"`
+	PassiveFailures     int    `json:"passive_failures,omitempty"`
+	CircuitState        string `json:"circuit_state,omitempty"`
+	CircuitOpenedAt     string `json:"circuit_opened_at,omitempty"`
+	CircuitReopenAt     string `json:"circuit_reopen_at,omitempty"`
 	Endpoint            string `json:"endpoint,omitempty"`
 	CheckedAt           string `json:"checked_at,omitempty"`
 	LastSuccessAt       string `json:"last_success_at,omitempty"`
@@ -1211,6 +1392,11 @@ type proxyBackendState struct {
 	Enabled             bool
 	Healthy             bool
 	InFlight            int
+	PassiveFailures     int
+	CircuitState        string
+	CircuitOpenedAt     time.Time
+	CircuitReopenAt     time.Time
+	HalfOpenRequests    int
 	Endpoint            string
 	CheckedAt           string
 	LastSuccessAt       string
@@ -1315,9 +1501,96 @@ func (m *upstreamHealthMonitor) ReleaseTarget(key string) {
 		if backend.InFlight > 0 {
 			backend.InFlight--
 		}
+		if backend.HalfOpenRequests > 0 {
+			backend.HalfOpenRequests--
+		}
 		break
 	}
 	m.refreshStatusLocked()
+}
+
+func (m *upstreamHealthMonitor) AcquireTarget(key string) bool {
+	if m == nil || strings.TrimSpace(key) == "" {
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	for _, backend := range m.backends {
+		if backend == nil || backend.Key != key {
+			continue
+		}
+		if !proxyBackendSelectableLocked(m.cfg, backend, now) {
+			return false
+		}
+		if m.cfg.CircuitBreakerEnabled && backend.CircuitState == "open" && !backend.CircuitReopenAt.IsZero() && !now.Before(backend.CircuitReopenAt) {
+			backend.CircuitState = "half_open"
+		}
+		backend.InFlight++
+		if backend.CircuitState == "half_open" {
+			backend.HalfOpenRequests++
+		}
+		m.refreshStatusLocked()
+		return true
+	}
+	return true
+}
+
+func (m *upstreamHealthMonitor) RecordPassiveFailure(key string, statusCode int, err error) {
+	if m == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	for _, backend := range m.backends {
+		if backend == nil || backend.Key != key {
+			continue
+		}
+		backend.LastFailureAt = now.Format(time.RFC3339Nano)
+		backend.LastStatusCode = statusCode
+		if err != nil {
+			backend.LastError = err.Error()
+		} else if statusCode > 0 {
+			backend.LastError = fmt.Sprintf("unexpected status code: %d", statusCode)
+		}
+		backend.PassiveFailures++
+		if m.cfg.PassiveHealthEnabled && backend.PassiveFailures >= proxyPassiveFailureThreshold(m.cfg) {
+			backend.Healthy = false
+		}
+		if m.cfg.CircuitBreakerEnabled && backend.PassiveFailures >= proxyPassiveFailureThreshold(m.cfg) {
+			backend.CircuitState = "open"
+			backend.CircuitOpenedAt = now
+			backend.CircuitReopenAt = now.Add(proxyCircuitOpenDuration(m.cfg))
+		}
+		m.refreshStatusLocked()
+		return
+	}
+}
+
+func (m *upstreamHealthMonitor) RecordPassiveSuccess(key string, statusCode int) {
+	if m == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	for _, backend := range m.backends {
+		if backend == nil || backend.Key != key {
+			continue
+		}
+		backend.LastSuccessAt = now.Format(time.RFC3339Nano)
+		backend.LastStatusCode = statusCode
+		backend.LastError = ""
+		backend.PassiveFailures = 0
+		backend.Healthy = true
+		backend.CircuitState = ""
+		backend.CircuitOpenedAt = time.Time{}
+		backend.CircuitReopenAt = time.Time{}
+		backend.HalfOpenRequests = 0
+		m.refreshStatusLocked()
+		return
+	}
 }
 
 func (m *upstreamHealthMonitor) run() {
@@ -1385,6 +1658,11 @@ func (m *upstreamHealthMonitor) recordResult(key string, checkedAt time.Time, st
 			backend.LastSuccessAt = backend.CheckedAt
 			backend.ConsecutiveFailures = 0
 			backend.LastError = ""
+			backend.PassiveFailures = 0
+			backend.CircuitState = ""
+			backend.CircuitOpenedAt = time.Time{}
+			backend.CircuitReopenAt = time.Time{}
+			backend.HalfOpenRequests = 0
 		} else {
 			backend.Healthy = false
 			backend.LastFailureAt = backend.CheckedAt
@@ -1487,6 +1765,10 @@ func (m *upstreamHealthMonitor) refreshStatusLocked() {
 			Enabled:             backend.Enabled,
 			Healthy:             backend.Healthy,
 			InFlight:            backend.InFlight,
+			PassiveFailures:     backend.PassiveFailures,
+			CircuitState:        backend.CircuitState,
+			CircuitOpenedAt:     formatProxyTime(backend.CircuitOpenedAt),
+			CircuitReopenAt:     formatProxyTime(backend.CircuitReopenAt),
 			Endpoint:            backend.Endpoint,
 			CheckedAt:           backend.CheckedAt,
 			LastSuccessAt:       backend.LastSuccessAt,
@@ -1589,6 +1871,56 @@ func proxyHealthCheckTimeout(cfg ProxyRulesConfig) time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
+func proxyPassiveFailureThreshold(cfg ProxyRulesConfig) int {
+	if cfg.PassiveFailureThreshold > 0 {
+		return cfg.PassiveFailureThreshold
+	}
+	return 3
+}
+
+func proxyCircuitOpenDuration(cfg ProxyRulesConfig) time.Duration {
+	if cfg.CircuitBreakerOpenSec > 0 {
+		return time.Duration(cfg.CircuitBreakerOpenSec) * time.Second
+	}
+	return 30 * time.Second
+}
+
+func proxyCircuitHalfOpenRequests(cfg ProxyRulesConfig) int {
+	if cfg.CircuitBreakerHalfOpenRequests > 0 {
+		return cfg.CircuitBreakerHalfOpenRequests
+	}
+	return 1
+}
+
+func proxyBackendSelectableLocked(cfg ProxyRulesConfig, backend *proxyBackendState, now time.Time) bool {
+	if backend == nil || !backend.Enabled {
+		return false
+	}
+	if cfg.CircuitBreakerEnabled {
+		switch backend.CircuitState {
+		case "open":
+			if !backend.CircuitReopenAt.IsZero() && now.Before(backend.CircuitReopenAt) {
+				return false
+			}
+		case "half_open":
+			if backend.HalfOpenRequests >= proxyCircuitHalfOpenRequests(cfg) {
+				return false
+			}
+		}
+	}
+	if proxyHealthCheckEnabled(cfg) || cfg.PassiveHealthEnabled {
+		return backend.Healthy
+	}
+	return true
+}
+
+func formatProxyTime(ts time.Time) string {
+	if ts.IsZero() {
+		return ""
+	}
+	return ts.UTC().Format(time.RFC3339Nano)
+}
+
 func proxyHealthEndpoint(cfg ProxyRulesConfig, target *url.URL) (string, error) {
 	if target == nil {
 		return "", fmt.Errorf("upstream target is required")
@@ -1651,7 +1983,7 @@ func buildProxyBackendStates(cfg ProxyRulesConfig, prev []*proxyBackendState) []
 		if err != nil {
 			continue
 		}
-		key := fmt.Sprintf("%s|%s", upstream.Name, target.String())
+		key := proxyBackendLookupKey(upstream.Name, target.String())
 		state := &proxyBackendState{
 			Key:     key,
 			Name:    upstream.Name,
@@ -1659,6 +1991,7 @@ func buildProxyBackendStates(cfg ProxyRulesConfig, prev []*proxyBackendState) []
 			Target:  target,
 			Weight:  upstream.Weight,
 			Enabled: upstream.Enabled,
+			Healthy: true,
 		}
 		if state.Weight <= 0 {
 			state.Weight = 1
@@ -1673,6 +2006,11 @@ func buildProxyBackendStates(cfg ProxyRulesConfig, prev []*proxyBackendState) []
 			state.LastError = prevState.LastError
 			state.LastStatusCode = prevState.LastStatusCode
 			state.LastLatencyMS = prevState.LastLatencyMS
+			state.PassiveFailures = prevState.PassiveFailures
+			state.CircuitState = prevState.CircuitState
+			state.CircuitOpenedAt = prevState.CircuitOpenedAt
+			state.CircuitReopenAt = prevState.CircuitReopenAt
+			state.HalfOpenRequests = prevState.HalfOpenRequests
 		}
 		if endpoint, err := proxyHealthEndpoint(cfg, target); err == nil {
 			state.Endpoint = endpoint
