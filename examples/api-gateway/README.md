@@ -20,6 +20,16 @@ curl -i "http://localhost:19093/v1/health"
 curl -i -X POST "http://localhost:19093/v1/auth/login" -H 'content-type: application/json' -d '{"username":"demo","password":"demo"}'
 ```
 
+Protected host smoke:
+
+```bash
+PROTECTED_HOST=protected.example.test ./smoke.sh
+```
+
+This sends traffic with `Host: protected.example.test`, verifies the protected-host route matches, and checks that a simple XSS probe is blocked with `403`.
+
+If you want to try a clone of your own site, keep the smoke script and replace the example upstream behind `data/conf/proxy.json`. When you change `PROTECTED_HOST`, update `data/conf/proxy.json` `routes[].match.hosts` to the same hostname so the protected-host route still matches.
+
 Rate-limit check (expect `429` after repeated calls):
 
 ```bash
