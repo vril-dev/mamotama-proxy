@@ -137,7 +137,7 @@ jobs:
           PUID="$(id -u)" \
           GUID="$(id -g)" \
           CORAZA_PORT=19090 \
-          docker compose up -d --build coraza
+          docker compose up -d --build coraza proxy-echo
 
           for i in $(seq 1 60); do
             code="$(curl -sS -o /dev/null -w "%{http_code}" "http://localhost:19090/healthz" || true)"
