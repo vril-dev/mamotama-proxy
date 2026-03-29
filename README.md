@@ -33,6 +33,17 @@ Specify a version:
 
 Edit `data/rules/crs/crs-setup.conf` as needed (for example, paranoia level and anomaly score settings).
 
+### Preset Quick Start
+
+Use the prepared minimal preset if you want a copy-ready baseline for the embedded admin UI and default upstream:
+
+```bash
+make preset-apply PRESET=minimal
+make preset-check PRESET=minimal
+```
+
+Edit `.env`, `data/conf/config.json`, and `data/conf/proxy.json` for real API keys, trusted CIDRs, and upstream routing before production use.
+
 ---
 
 ## Environment Variables

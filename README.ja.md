@@ -34,6 +34,17 @@ Coraza + CRS WAFプロジェクト
 
 `data/rules/crs/crs-setup.conf` は必要に応じて編集してください（`Paranoia Level` や `anomaly` スコアなど）。
 
+### Preset クイックスタート
+
+埋め込み管理UIと既定 upstream を含む最小構成から始める場合は次を実行します。
+
+```bash
+make preset-apply PRESET=minimal
+make preset-check PRESET=minimal
+```
+
+本番利用前に `.env`, `data/conf/config.json`, `data/conf/proxy.json` の API key, trusted CIDR, upstream routing を実値へ差し替えてください。
+
 ---
 
 ## 環境変数
