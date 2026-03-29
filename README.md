@@ -426,6 +426,8 @@ make ci-local       # local CI baseline (check + smoke)
 make compose-down
 ```
 
+`make smoke PROTECTED_HOST=protected.example.test` uses a canonical protected-host fixture. Replace that host with your own domain when validating a cloned site.
+
 #### Optional: Legacy Proxy Env Migration (`WAF_APP_URL` -> `conf/proxy.json`)
 
 If you are migrating from older env-based proxy config, generate and validate `proxy.json` with:
@@ -528,7 +530,7 @@ Practical example stacks are available under:
 - `examples/wordpress` (WordPress + high-paranoia CRS setup)
 - `examples/api-gateway` (REST API + strict rate-limit profile)
 
-See `examples/README.md` for common setup flow.
+See `examples/README.md` for common setup flow. `examples/api-gateway` also includes `PROTECTED_HOST=protected.example.test ./smoke.sh` so users can swap in a cloned site and verify host-aware protection quickly.
 
 ### FP Tuner Mock Flow
 
