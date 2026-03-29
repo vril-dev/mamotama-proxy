@@ -30,6 +30,9 @@ UI_EMBED_DIR := coraza/src/internal/handler/admin_ui_dist
 BIN_DIR ?= bin
 APP_NAME ?= mamotama-proxy
 APP_PKG ?= ./cmd/server
+PRESET ?= minimal
+PRESET_DIR := presets/$(PRESET)
+PRESET_OVERWRITE ?= 0
 
 export PUID GUID CORAZA_PORT HOST_CORAZA_PORT WAF_LISTEN_PORT WAF_API_KEY_PRIMARY PROTECTED_HOST
 
@@ -38,6 +41,7 @@ export PUID GUID CORAZA_PORT HOST_CORAZA_PORT WAF_LISTEN_PORT WAF_API_KEY_PRIMAR
 	go-test go-build build \
 	ui-install ui-test ui-build ui-sync ui-build-sync \
 	compose-config compose-config-mysql compose-up compose-down mysql-up mysql-down \
+	preset-list preset-apply preset-check \
 	migrate-proxy-config migrate-proxy-config-check \
 	smoke bench gotestwaf \
 	check ci-local clean
@@ -65,6 +69,12 @@ help:
 	@echo "  make mysql-up                   Start local mysql profile service"
 	@echo "  make mysql-down                 Stop local mysql profile service"
 	@echo ""
+	@echo "  make preset-list                List available config presets"
+	@echo "  make preset-apply               Copy preset files into local workspace"
+	@echo "    - optional: PRESET=$(PRESET) PRESET_OVERWRITE=1"
+	@echo "  make preset-check               Validate preset files without modifying local files"
+	@echo "    - optional: PRESET=$(PRESET)"
+	@echo ""
 	@echo "  make migrate-proxy-config       Generate data/conf/proxy.json from legacy env"
 	@echo "  make migrate-proxy-config-check Validate proxy config file"
 	@echo "  make smoke                      Run embedded UI + proxy-rules smoke checks"
@@ -89,6 +99,46 @@ env-init:
 	else \
 		echo "[env-init] .env already exists (skip)"; \
 	fi
+
+preset-list:
+	@find presets -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+
+preset-apply:
+	@set -euo pipefail; \
+	preset_dir="$(PRESET_DIR)"; \
+	for pair in "$$preset_dir/.env:.env" "$$preset_dir/config.json:data/conf/config.json" "$$preset_dir/proxy.json:data/conf/proxy.json"; do \
+		src="$${pair%%:*}"; \
+		dst="$${pair#*:}"; \
+		if [[ ! -f "$$src" ]]; then \
+			echo "[preset-apply][ERROR] missing $$src" >&2; \
+			exit 1; \
+		fi; \
+		mkdir -p "$$(dirname "$$dst")"; \
+		if [[ -f "$$dst" && "$(PRESET_OVERWRITE)" != "1" ]]; then \
+			if cmp -s "$$src" "$$dst"; then \
+				echo "[preset-apply] $$dst already matches $(PRESET)"; \
+				continue; \
+			fi; \
+			echo "[preset-apply] $$dst already exists (set PRESET_OVERWRITE=1 to replace)"; \
+			continue; \
+		fi; \
+		cp "$$src" "$$dst"; \
+		echo "[preset-apply] applied $(PRESET) -> $$dst"; \
+	done
+
+preset-check:
+	@set -euo pipefail; \
+	preset_dir="$(PRESET_DIR)"; \
+	for src in "$$preset_dir/.env" "$$preset_dir/config.json" "$$preset_dir/proxy.json"; do \
+		if [[ ! -f "$$src" ]]; then \
+			echo "[preset-check][ERROR] missing $$src" >&2; \
+			exit 1; \
+		fi; \
+	done; \
+	docker compose --env-file "$$preset_dir/.env" config >/dev/null; \
+	python3 -m json.tool "$$preset_dir/config.json" >/dev/null; \
+	python3 -m json.tool "$$preset_dir/proxy.json" >/dev/null; \
+	echo "[preset-check] $(PRESET) ok"
 
 crs-install:
 	./scripts/install_crs.sh
