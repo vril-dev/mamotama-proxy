@@ -16,6 +16,15 @@ app.get('/v1/products', (_req, res) => {
   });
 });
 
+app.get('/v1/whoami', (req, res) => {
+  res.json({
+    host: req.get('host') || '',
+    x_forwarded_host: req.get('x-forwarded-host') || '',
+    x_forwarded_proto: req.get('x-forwarded-proto') || '',
+    x_protected_host: req.get('x-protected-host') || ''
+  });
+});
+
 app.post('/v1/auth/login', (req, res) => {
   const username = req.body?.username || 'unknown';
   res.json({

@@ -425,6 +425,8 @@ make ci-local       # ローカルCI基準（check + smoke）
 make compose-down
 ```
 
+`make smoke PROTECTED_HOST=protected.example.test` は canonical な保護対象 host fixture を使います。clone した自前サイトで確認するときは、この host を自分のドメインに置き換えて使えます。
+
 #### 任意: 旧Proxy環境変数からの移行（`WAF_APP_URL` -> `conf/proxy.json`）
 
 旧来の env 起点設定から移行する場合は、以下で `proxy.json` を生成・検証できます。
@@ -527,7 +529,7 @@ rate limit の挙動を含めたい場合は `BENCH_DISABLE_RATE_LIMIT=0` を指
 - `examples/wordpress`（WordPress + 高パラノイア CRS 設定）
 - `examples/api-gateway`（REST API + 厳しめレート制限プロファイル）
 
-共通の起動手順は `examples/README.md` を参照してください。
+共通の起動手順は `examples/README.md` を参照してください。`examples/api-gateway` には `PROTECTED_HOST=protected.example.test ./smoke.sh` もあり、clone したサイトを差し替える前提の host 付き確認をすぐ試せます。
 
 ### FPチューナー（モック）送受信テスト
 

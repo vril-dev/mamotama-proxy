@@ -11,6 +11,7 @@ proxy_api_need_cmd jq
 proxy_api_need_cmd python3
 
 PROXY_ECHO_PORT="${PROXY_ECHO_PORT:-18080}"
+PROTECTED_HOST="${PROTECTED_HOST:-protected.example.test}"
 proxy_echo_log="$(mktemp /tmp/proxy_echo.XXXXXX.log)"
 proxy_route_headers="/tmp/proxy_route_headers.txt"
 proxy_route_body="/tmp/proxy_route_body.json"
@@ -124,6 +125,7 @@ if [[ "${dry_run_code}" != "200" ]]; then
 fi
 
 route_raw="$(jq -n \
+  --arg protectedHost "${PROTECTED_HOST}" \
   --arg upstream "http://host.docker.internal:${PROXY_ECHO_PORT}" \
   '{
     upstream_url: $upstream,
@@ -141,7 +143,7 @@ route_raw="$(jq -n \
         enabled: true,
         priority: 10,
         match: {
-          hosts: ["api.example.com"],
+          hosts: [$protectedHost],
           path: { type: "prefix", value: "/servicea/" }
         },
         action: {
@@ -196,7 +198,7 @@ if [[ "${route_validate_code}" != "200" ]]; then
   exit 1
 fi
 
-route_dry_run_body="$(jq -n --arg raw "${route_raw}" --arg host "api.example.com" --arg path "/servicea/users" '{raw: $raw, host: $host, path: $path}')"
+route_dry_run_body="$(jq -n --arg raw "${route_raw}" --arg host "${PROTECTED_HOST}" --arg path "/servicea/users" '{raw: $raw, host: $host, path: $path}')"
 route_dry_run_code="$(curl -sS -o /tmp/proxy_route_dry_run_resp.json -w "%{http_code}" \
   -H "${PROXY_AUTH_HEADER}" -H "Content-Type: application/json" \
   -X POST --data "${route_dry_run_body}" "${PROXY_API_URL}/proxy-rules:dry-run")"
@@ -238,7 +240,7 @@ if ! jq -e '.proxy.routes | length == 1' <<<"${route_snapshot}" >/dev/null; then
 fi
 
 route_request_code="$(curl -sS -D "${proxy_route_headers}" -o "${proxy_route_body}" -w "%{http_code}" \
-  -H 'Host: api.example.com' \
+  -H "Host: ${PROTECTED_HOST}" \
   "${PROXY_BASE_URL}/servicea/users")"
 if [[ "${route_request_code}" != "200" ]]; then
   echo "[proxy-smoke][ERROR] routed request failed: ${route_request_code}" >&2
