@@ -237,7 +237,10 @@ Phase-1/2.1/2.2/2.3 routing in `conf/proxy.json`:
 - Route selection order is fixed: matching `routes[]` first, then `default_route`, then legacy `upstream_url` / `upstreams[]`.
 - Host matching supports exact host and `*.example.com` wildcard host. Matching is case-insensitive, strips the request port, trims a trailing dot, and wildcard patterns match subdomains only (`example.com` itself does not match `*.example.com`).
 - Path matching supports exact path, segment-safe prefix path, and regex path. A prefix `/servicea/` matches `/servicea`, `/servicea/`, and `/servicea/...`, but not `/servicea-foo`. A regex route matches the request path only; query parameters are not part of route matching.
+- Global `hash_policy` / `hash_key` can make multi-upstream legacy selection sticky by `client_ip`, `header`, `cookie`, or `jwt_sub`.
 - `action.upstream` can point to a configured `upstreams[].name` or an absolute `http(s)` URL. If omitted, the route uses the legacy global upstream selection. When `upstream_url` / `upstreams[]` are not set, each enabled route and `default_route` must declare `action.upstream`.
+- `action.canary_upstream` + `action.canary_weight_percent` perform weighted route-level canary selection between the primary `action.upstream` and the canary target.
+- `action.hash_policy` / `action.hash_key` override the global hash policy for that route and keep canary selection sticky across requests.
 - `action.host_rewrite` overrides the outbound `Host` header only. It must be a fixed host or `host:port`; schemes and wildcards are rejected. The selected upstream URL does not change. For HTTPS upstreams, SNI still follows the upstream URL and is not rewritten in phase 2.3.
 - `action.path_rewrite.prefix` rewrites only the matched path prefix. It is intended to cover `/servicea/... -> /...`, `/servicea/... -> /servicea/...`, and `/servicea/... -> /service-a/...`. The proxy preserves escaped suffixes such as `%2F` when forwarding, and it does not apply extra path cleaning. Regex path routes do not support `action.path_rewrite.prefix` in phase 2.2.
 - `action.request_headers` supports outbound request-header `remove`, `set`, then `add`. `Host`, `X-Forwarded-*`, and hop-by-hop headers are rejected for all three operations.
@@ -245,7 +248,9 @@ Phase-1/2.1/2.2/2.3 routing in `conf/proxy.json`:
 - `POST /mamotama-api/proxy-rules:dry-run` uses the same route selection, upstream resolution, and path rewrite logic as runtime proxying. When you validate unsaved raw config, dry-run cannot reuse the current runtime health state, so global upstream fallback reflects the provided config rather than live backend health.
 - If no route matches, `default_route` is used. If `default_route` is unset, the proxy falls back to legacy `upstream_url` / `upstreams[]`.
 - Route priority stays explicit even with regex routes. There is no implicit specificity ordering between `exact`, `prefix`, and `regex`; the lowest `priority` value still wins first.
-- Still out of scope after phase 2.3: response body rewrite, weighted/canary/mirror routing, query rewrite.
+- `retry_attempts`, `retry_backoff_ms`, `retry_per_try_timeout_ms`, `retry_status_codes`, and `retry_methods` control idempotent upstream retries.
+- `passive_health_enabled`, `passive_failure_threshold`, `passive_unhealthy_status_codes`, `circuit_breaker_enabled`, `circuit_breaker_open_sec`, and `circuit_breaker_half_open_requests` add passive failure tracking and circuit breaking on top of active health checks.
+- Still out of scope after phase 2.3: response body rewrite, mirror routing, query rewrite.
 
 Route-related logs include:
 - `proxy_route`
@@ -261,7 +266,9 @@ Legacy config (still valid):
 {
   "upstream_url": "http://app.internal:8080",
   "upstreams": [],
-  "load_balancing_strategy": "round_robin"
+  "load_balancing_strategy": "round_robin",
+  "hash_policy": "cookie",
+  "hash_key": "session"
 }
 ```
 
@@ -285,6 +292,10 @@ Phase-1/2.1/2.2/2.3 route config example:
       },
       "action": {
         "upstream": "service-a",
+        "canary_upstream": "service-b",
+        "canary_weight_percent": 15,
+        "hash_policy": "header",
+        "hash_key": "X-User",
         "host_rewrite": "service-a.internal",
         "path_rewrite": { "prefix": "/service-a/" },
         "request_headers": {

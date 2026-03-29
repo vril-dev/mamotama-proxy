@@ -17,6 +17,10 @@ export type ProxyRoutePathRewrite = {
 
 export type ProxyRouteAction = {
   upstream: string;
+  canaryUpstream: string;
+  canaryWeightPercent: number;
+  hashPolicy: "" | "client_ip" | "header" | "cookie" | "jwt_sub";
+  hashKey: string;
   hostRewrite: string;
   pathRewrite: ProxyRoutePathRewrite | null;
   requestHeaders: ProxyRouteHeaderOperations;
@@ -62,6 +66,10 @@ export function createEmptyHeaderOperations(): ProxyRouteHeaderOperations {
 export function createEmptyRouteAction(): ProxyRouteAction {
   return {
     upstream: "",
+    canaryUpstream: "",
+    canaryWeightPercent: 10,
+    hashPolicy: "",
+    hashKey: "",
     hostRewrite: "",
     pathRewrite: null,
     requestHeaders: createEmptyHeaderOperations(),
@@ -267,6 +275,10 @@ function readRouteAction(value: JSONRecord | null): ProxyRouteAction {
   }
   return {
     upstream: readString(value.upstream),
+    canaryUpstream: readString(value.canary_upstream),
+    canaryWeightPercent: normalizeInt(value.canary_weight_percent, 10),
+    hashPolicy: readHashPolicy(value.hash_policy),
+    hashKey: readString(value.hash_key),
     hostRewrite: readString(value.host_rewrite),
     pathRewrite: readPathRewrite(value.path_rewrite),
     requestHeaders: readHeaderOperations(value.request_headers),
@@ -362,6 +374,16 @@ function writeRouteAction(action: ProxyRouteAction): JSONRecord {
   if (action.upstream.trim()) {
     out.upstream = action.upstream.trim();
   }
+  if (action.canaryUpstream.trim()) {
+    out.canary_upstream = action.canaryUpstream.trim();
+    out.canary_weight_percent = normalizePositiveInt(action.canaryWeightPercent, 10);
+  }
+  if (action.hashPolicy) {
+    out.hash_policy = action.hashPolicy;
+  }
+  if (action.hashKey.trim()) {
+    out.hash_key = action.hashKey.trim();
+  }
   if (action.hostRewrite.trim()) {
     out.host_rewrite = action.hostRewrite.trim();
   }
@@ -418,6 +440,18 @@ function readBoolean(value: unknown, fallback: boolean): boolean {
 
 function normalizeInt(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : fallback;
+}
+
+function readHashPolicy(value: unknown): "" | "client_ip" | "header" | "cookie" | "jwt_sub" {
+  switch (readString(value)) {
+    case "client_ip":
+    case "header":
+    case "cookie":
+    case "jwt_sub":
+      return readString(value) as "" | "client_ip" | "header" | "cookie" | "jwt_sub";
+    default:
+      return "";
+  }
 }
 
 function normalizePositiveInt(value: unknown, fallback: number): number {

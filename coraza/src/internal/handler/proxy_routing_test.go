@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -462,6 +463,97 @@ func TestProxyRouteHostRewrite(t *testing.T) {
 	}
 	if got := dryRun.FinalURL; got != "http://route.internal:8080/servicea/users" {
 		t.Fatalf("dry-run final_url=%s", got)
+	}
+}
+
+func TestProxyRouteCanaryHashSelectionStable(t *testing.T) {
+	cfg := mustValidateProxyRulesRaw(t, `{
+  "upstream_url": "http://legacy.internal:8080",
+  "routes": [
+    {
+      "name": "canary",
+      "priority": 10,
+      "match": {
+        "hosts": ["api.example.com"],
+        "path": { "type": "prefix", "value": "/servicea/" }
+      },
+      "action": {
+        "upstream": "http://primary.internal:8080",
+        "canary_upstream": "http://canary.internal:8080",
+        "canary_weight_percent": 25,
+        "hash_policy": "header",
+        "hash_key": "X-User"
+      }
+    }
+  ]
+}`)
+
+	resolveForHeader := func(value string) proxyRouteDecision {
+		req, err := http.NewRequest(http.MethodGet, "http://proxy.local/servicea/users", nil)
+		if err != nil {
+			t.Fatalf("http.NewRequest: %v", err)
+		}
+		req.Host = "api.example.com"
+		req.Header.Set("X-User", value)
+		decision, err := resolveProxyRouteDecision(req, cfg, nil)
+		if err != nil {
+			t.Fatalf("resolveProxyRouteDecision: %v", err)
+		}
+		return decision
+	}
+
+	first := resolveForHeader("user-42")
+	second := resolveForHeader("user-42")
+	if first.SelectedUpstreamURL != second.SelectedUpstreamURL {
+		t.Fatalf("hash selection not stable: %s vs %s", first.SelectedUpstreamURL, second.SelectedUpstreamURL)
+	}
+
+	sawPrimary := false
+	sawCanary := false
+	for i := 0; i < 128; i++ {
+		decision := resolveForHeader(fmt.Sprintf("user-%d", i))
+		switch decision.SelectedUpstreamURL {
+		case "http://primary.internal:8080":
+			sawPrimary = true
+		case "http://canary.internal:8080":
+			sawCanary = true
+		}
+		if sawPrimary && sawCanary {
+			break
+		}
+	}
+	if !sawPrimary || !sawCanary {
+		t.Fatalf("expected canary hash routing to reach both upstreams, sawPrimary=%v sawCanary=%v", sawPrimary, sawCanary)
+	}
+}
+
+func TestProxyGlobalHashPolicyKeepsStickySelection(t *testing.T) {
+	cfg := mustValidateProxyRulesRaw(t, `{
+  "hash_policy": "cookie",
+  "hash_key": "session",
+  "upstreams": [
+    { "name": "blue", "url": "http://blue.internal:8080", "weight": 1, "enabled": true },
+    { "name": "green", "url": "http://green.internal:8080", "weight": 1, "enabled": true }
+  ]
+}`)
+
+	resolveForCookie := func(value string) proxyRouteDecision {
+		req, err := http.NewRequest(http.MethodGet, "http://proxy.local/anything", nil)
+		if err != nil {
+			t.Fatalf("http.NewRequest: %v", err)
+		}
+		req.AddCookie(&http.Cookie{Name: "session", Value: value})
+		decision, err := resolveProxyRouteDecision(req, cfg, nil)
+		if err != nil {
+			t.Fatalf("resolveProxyRouteDecision: %v", err)
+		}
+		return decision
+	}
+
+	first := resolveForCookie("abc")
+	second := resolveForCookie("abc")
+	if first.SelectedUpstream != second.SelectedUpstream {
+		t.Fatalf("sticky selection changed: %s vs %s", first.SelectedUpstream, second.SelectedUpstream)
 	}
 }
 
