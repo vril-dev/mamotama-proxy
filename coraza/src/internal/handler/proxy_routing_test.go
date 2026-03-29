@@ -221,7 +221,7 @@ func TestProxyRouteResolutionOrderAndDryRun(t *testing.T) {
 			if got := dryRun.SelectedUpstreamURL; got != tt.wantUpstreamURL {
 				t.Fatalf("dry-run selected_upstream_url=%s want=%s", got, tt.wantUpstreamURL)
 			}
-			if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath); got != tt.wantFinalURL {
+			if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath, decision.RewrittenQuery); got != tt.wantFinalURL {
 				t.Fatalf("decision final_url=%s want=%s", got, tt.wantFinalURL)
 			}
 			if got := dryRun.FinalURL; got != tt.wantFinalURL {
@@ -298,7 +298,7 @@ func TestProxyRoutePreservesEncodedSuffixOnRewrite(t *testing.T) {
 	if decision.RewrittenRawPath != "/service-a/%2Fetc" {
 		t.Fatalf("rewritten_raw_path=%s", decision.RewrittenRawPath)
 	}
-	if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath); got != "http://route.internal:8080/service-a/%2Fetc" {
+	if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath, decision.RewrittenQuery); got != "http://route.internal:8080/service-a/%2Fetc" {
 		t.Fatalf("final_url=%s", got)
 	}
 }
@@ -412,7 +412,7 @@ func TestProxyRouteRegexMatchAndPriority(t *testing.T) {
 			if got := string(decision.Source); got != tt.wantSource {
 				t.Fatalf("source=%s want=%s", got, tt.wantSource)
 			}
-			if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath); got != tt.wantFinal {
+			if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath, decision.RewrittenQuery); got != tt.wantFinal {
 				t.Fatalf("final_url=%s want=%s", got, tt.wantFinal)
 			}
 
@@ -463,6 +463,66 @@ func TestProxyRouteHostRewrite(t *testing.T) {
 	}
 	if got := dryRun.FinalURL; got != "http://route.internal:8080/servicea/users" {
 		t.Fatalf("dry-run final_url=%s", got)
+	}
+}
+
+func TestProxyRouteQueryRewriteAndDryRun(t *testing.T) {
+	cfg := mustValidateProxyRulesRaw(t, `{
+  "upstream_url": "http://legacy.internal:8080",
+  "routes": [
+    {
+      "name": "query-rewrite",
+      "priority": 10,
+      "match": {
+        "hosts": ["api.example.com"],
+        "path": { "type": "prefix", "value": "/servicea/" }
+      },
+      "action": {
+        "upstream": "http://route.internal:8080?origin=1",
+        "path_rewrite": { "prefix": "/" },
+        "query_rewrite": {
+          "remove": ["debug"],
+          "remove_prefixes": ["utm_"],
+          "set": { "lang": "ja" },
+          "add": { "preview": "1" }
+        }
+      }
+    }
+  ]
+}`)
+
+	req, err := http.NewRequest(http.MethodGet, "http://proxy.local/servicea/users?lang=en&utm_source=ads&debug=true&tag=base", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	req.Host = "api.example.com"
+
+	decision, err := resolveProxyRouteDecision(req, cfg, nil)
+	if err != nil {
+		t.Fatalf("resolveProxyRouteDecision: %v", err)
+	}
+	if decision.OriginalQuery != "lang=en&utm_source=ads&debug=true&tag=base" {
+		t.Fatalf("original_query=%s", decision.OriginalQuery)
+	}
+	if decision.RewrittenQuery != "lang=ja&preview=1&tag=base" {
+		t.Fatalf("rewritten_query=%s", decision.RewrittenQuery)
+	}
+	if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath, decision.RewrittenQuery); got != "http://route.internal:8080/users?origin=1&lang=ja&preview=1&tag=base" {
+		t.Fatalf("final_url=%s", got)
+	}
+
+	dryRun, err := proxyRouteDryRun(cfg, "api.example.com", "/servicea/users?lang=en&utm_source=ads&debug=true&tag=base")
+	if err != nil {
+		t.Fatalf("proxyRouteDryRun: %v", err)
+	}
+	if dryRun.OriginalQuery != "lang=en&utm_source=ads&debug=true&tag=base" {
+		t.Fatalf("dry-run original_query=%s", dryRun.OriginalQuery)
+	}
+	if dryRun.RewrittenQuery != "lang=ja&preview=1&tag=base" {
+		t.Fatalf("dry-run rewritten_query=%s", dryRun.RewrittenQuery)
+	}
+	if dryRun.FinalURL != "http://route.internal:8080/users?origin=1&lang=ja&preview=1&tag=base" {
+		t.Fatalf("dry-run final_url=%s", dryRun.FinalURL)
 	}
 }
 
@@ -712,6 +772,25 @@ func TestValidateProxyRulesRawRejectsInvalidActionUpstream(t *testing.T) {
 }`,
 			wantErr: "host rewrite does not support wildcards",
 		},
+		{
+			name: "query rewrite rejects conflicting key",
+			raw: `{
+  "upstream_url": "http://127.0.0.1:8080",
+  "routes": [
+    {
+      "priority": 10,
+      "action": {
+        "upstream": "http://127.0.0.1:8081",
+        "query_rewrite": {
+          "set": { "lang": "ja" },
+          "remove": ["lang"]
+        }
+      }
+    }
+  ]
+}`,
+			wantErr: "query_rewrite.remove.lang conflicts with routes[0].action.query_rewrite.set",
+		},
 	}
 
 	for _, tt := range tests {
@@ -849,7 +928,7 @@ func TestLegacyProxyRouteCompatibilityWithoutRoutes(t *testing.T) {
 	if decision.SelectedUpstream != "primary" {
 		t.Fatalf("selected_upstream=%s", decision.SelectedUpstream)
 	}
-	if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath); got != "http://legacy.internal:8080/healthz" {
+	if got := finalProxyRouteURL(decision.Target, decision.RewrittenPath, decision.RewrittenRawPath, decision.RewrittenQuery); got != "http://legacy.internal:8080/healthz" {
 		t.Fatalf("final_url=%s", got)
 	}
 
@@ -867,12 +946,14 @@ func TestLegacyProxyRouteCompatibilityWithoutRoutes(t *testing.T) {
 
 func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
 	var gotPath string
+	var gotQuery string
 	var gotSet string
 	var gotAdd string
 	var gotRemoved string
 	var gotHost string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
 		gotSet = r.Header.Get("X-Service")
 		gotAdd = r.Header.Get("X-Route")
 		gotRemoved = r.Header.Get("X-Debug")
@@ -899,6 +980,12 @@ func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
       "action": {
         "host_rewrite": "service-a.internal",
         "path_rewrite": { "prefix": "/service-a/" },
+        "query_rewrite": {
+          "remove": ["debug"],
+          "remove_prefixes": ["utm_"],
+          "set": { "lang": "ja" },
+          "add": { "preview": "1" }
+        },
         "request_headers": {
           "set": { "X-Service": "service-a" },
           "add": { "X-Route": "service-a" },
@@ -920,7 +1007,7 @@ func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
 		t.Fatalf("InitProxyRuntime: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://proxy.local/servicea/users", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.local/servicea/users?lang=en&utm_source=ads&debug=true&tag=base", nil)
 	req.Host = "api.example.com"
 	req.Header.Set("X-Debug", "remove-me")
 	decision, err := resolveProxyRouteDecision(req, currentProxyConfig(), proxyRuntimeHealth())
@@ -937,6 +1024,9 @@ func TestServeProxyAppliesRouteRewriteAndHeaders(t *testing.T) {
 	}
 	if gotPath != "/service-a/users" {
 		t.Fatalf("path=%s", gotPath)
+	}
+	if gotQuery != "lang=ja&preview=1&tag=base" {
+		t.Fatalf("query=%s", gotQuery)
 	}
 	if gotSet != "service-a" {
 		t.Fatalf("X-Service=%s", gotSet)

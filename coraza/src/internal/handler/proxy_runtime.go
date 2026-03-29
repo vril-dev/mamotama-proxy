@@ -170,7 +170,11 @@ func InitProxyRuntime(configPath string, rollbackMax int) error {
 				rewrittenPath = decision.RewrittenPath
 				rewrittenRawPath = decision.RewrittenRawPath
 			}
-			rewriteProxyOutgoingURL(pr.Out, target, rewrittenPath, rewrittenRawPath)
+			rewrittenQuery := pr.In.URL.RawQuery
+			if ok {
+				rewrittenQuery = decision.RewrittenQuery
+			}
+			rewriteProxyOutgoingURL(pr.Out, target, rewrittenPath, rewrittenRawPath, rewrittenQuery)
 			pr.SetXForwarded()
 			outboundHost := pr.In.Host
 			if ok && strings.TrimSpace(decision.RewrittenHost) != "" {
@@ -1109,7 +1113,7 @@ func cloneProxyRetryRequest(req *http.Request, decision proxyRouteDecision, cand
 	if out.URL == nil {
 		out.URL = &url.URL{}
 	}
-	rewriteProxyOutgoingURL(out, candidate.Target, decision.RewrittenPath, decision.RewrittenRawPath)
+	rewriteProxyOutgoingURL(out, candidate.Target, decision.RewrittenPath, decision.RewrittenRawPath, decision.RewrittenQuery)
 	out.Host = decision.RewrittenHost
 	var cancel context.CancelFunc
 	if retryPolicy.PerTryTimeout > 0 {

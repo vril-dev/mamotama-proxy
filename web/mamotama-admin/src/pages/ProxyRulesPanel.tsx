@@ -5,14 +5,17 @@ import {
   createEmptyRoute,
   createEmptyUpstream,
   headerMapToMultiline,
+  multilineToQueryMap,
   multilineToHeaderMap,
   multilineToStringList,
   parseProxyRulesEditor,
+  queryMapToMultiline,
   serializeProxyRulesEditor,
   stringListToMultiline,
   type ProxyRoute,
   type ProxyRouteAction,
   type ProxyRouteHeaderOperations,
+  type ProxyRouteQueryOperations,
   type ProxyRulesRoutingEditorState,
   type ProxyUpstream,
 } from "@/lib/proxyRulesEditor";
@@ -36,8 +39,10 @@ type DryRunResult = {
   route_name?: string;
   original_host?: string;
   original_path?: string;
+  original_query?: string;
   rewritten_host?: string;
   rewritten_path?: string;
+  rewritten_query?: string;
   selected_upstream?: string;
   selected_upstream_url?: string;
   final_url?: string;
@@ -232,7 +237,7 @@ export default function ProxyRulesPanel() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Proxy Rules</h1>
-          <p className="text-sm text-neutral-500">Edit route-aware upstream selection with a structured builder, then keep raw JSON for the rest of the proxy transport knobs.</p>
+          <p className="text-sm text-neutral-500">Edit route-aware upstream selection, path/query rewrites, and header operations with a structured builder, then keep raw JSON for the rest of the proxy transport knobs.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <Badge color={structuredError ? "red" : "green"}>{structuredError ? "Raw JSON out of sync" : "Structured editor synced"}</Badge>
@@ -256,7 +261,7 @@ export default function ProxyRulesPanel() {
         <div className="space-y-4">
           <SectionCard
             title="Workflow"
-            subtitle="Validate, probe, save, and rollback stay on the same raw proxy-rules backend API. Structured edits only touch routing fields."
+            subtitle="Validate, probe, save, and rollback stay on the same raw proxy-rules backend API. Structured edits only touch routing and rewrite fields."
             actions={
               <div className="flex flex-wrap items-center gap-2">
                 <ActionButton onClick={() => void load()} disabled={loading || saving}>
@@ -474,8 +479,8 @@ export default function ProxyRulesPanel() {
               <Field label="Host" hint="Optional. Leave empty to simulate host-agnostic routing.">
                 <input className={inputClass} value={dryRunHost} onChange={(e) => setDryRunHost(e.target.value)} placeholder="api.example.com" />
               </Field>
-              <Field label="Path">
-                <input className={inputClass} value={dryRunPath} onChange={(e) => setDryRunPath(e.target.value)} placeholder="/servicea/users" />
+              <Field label="Path" hint="Query strings are allowed here, for example `/servicea/users?lang=en&utm_source=ads`.">
+                <input className={inputClass} value={dryRunPath} onChange={(e) => setDryRunPath(e.target.value)} placeholder="/servicea/users?lang=en" />
               </Field>
             </div>
             {dryRunMessages.length > 0 ? (
@@ -696,6 +701,13 @@ function RouteEditorCard({
         </Field>
       </div>
 
+      <QueryOperationsEditor
+        title="Query rewrite"
+        description="Applied after route matching. Operations run in remove, remove-prefixes, set, then add order. Route matching itself still ignores query strings."
+        ops={route.action.queryRewrite}
+        onChange={(next) => setAction({ ...route.action, queryRewrite: next })}
+      />
+
       <div className="grid gap-3 md:grid-cols-4">
         <Field label="Canary upstream" hint="Optional secondary upstream for weighted canary routing.">
           <input
@@ -759,6 +771,85 @@ function RouteEditorCard({
           ops={route.action.responseHeaders}
           onChange={(next) => setAction({ ...route.action, responseHeaders: next })}
         />
+      </div>
+    </div>
+  );
+}
+
+function QueryOperationsEditor({
+  title,
+  description,
+  ops,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  ops: ProxyRouteQueryOperations;
+  onChange: (next: ProxyRouteQueryOperations) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-neutral-200 bg-white p-3 space-y-3">
+      <div>
+        <div className="font-medium text-sm">{title}</div>
+        <div className="text-xs text-neutral-500">{description}</div>
+      </div>
+      <div className="grid gap-3 xl:grid-cols-2">
+        <Field label="Set" hint="One `key=value` pair per line. Replaces existing values for that key.">
+          <textarea
+            className={textAreaClass}
+            value={queryMapToMultiline(ops.set)}
+            onChange={(e) =>
+              onChange({
+                ...ops,
+                set: multilineToQueryMap(e.target.value),
+              })
+            }
+            spellCheck={false}
+            placeholder={"lang=ja\nmode=preview"}
+          />
+        </Field>
+        <Field label="Add" hint="One `key=value` pair per line. Appends another value for that key.">
+          <textarea
+            className={textAreaClass}
+            value={queryMapToMultiline(ops.add)}
+            onChange={(e) =>
+              onChange({
+                ...ops,
+                add: multilineToQueryMap(e.target.value),
+              })
+            }
+            spellCheck={false}
+            placeholder="preview=1"
+          />
+        </Field>
+        <Field label="Remove" hint="One query key per line.">
+          <textarea
+            className={textAreaClass}
+            value={stringListToMultiline(ops.remove)}
+            onChange={(e) =>
+              onChange({
+                ...ops,
+                remove: multilineToStringList(e.target.value),
+              })
+            }
+            spellCheck={false}
+            placeholder={"debug\ntracking_id"}
+          />
+        </Field>
+        <Field label="Remove prefixes" hint="One query-key prefix per line, for example `utm_`.">
+          <textarea
+            className={textAreaClass}
+            value={stringListToMultiline(ops.removePrefixes)}
+            onChange={(e) =>
+              onChange({
+                ...ops,
+                removePrefixes: multilineToStringList(e.target.value),
+              })
+            }
+            spellCheck={false}
+            placeholder={"utm_\nfbclid"}
+          />
+        </Field>
       </div>
     </div>
   );

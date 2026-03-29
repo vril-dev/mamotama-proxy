@@ -3,9 +3,11 @@ import test from "node:test";
 import {
   createEmptyDefaultRoute,
   headerMapToMultiline,
+  multilineToQueryMap,
   multilineToHeaderMap,
   multilineToStringList,
   parseProxyRulesEditor,
+  queryMapToMultiline,
   serializeProxyRulesEditor,
   stringListToMultiline,
   type ProxyRulesRoutingEditorState,
@@ -39,6 +41,12 @@ test("parseProxyRulesEditor reads route fields without dropping unrelated config
           "hash_key": "X-User",
           "host_rewrite": "service-a.internal",
           "path_rewrite": { "prefix": "/service-a/" },
+          "query_rewrite": {
+            "remove": ["debug"],
+            "remove_prefixes": ["utm_"],
+            "set": { "lang": "ja" },
+            "add": { "preview": "1" }
+          },
           "request_headers": {
             "set": { "X-Service": "service-a" }
           },
@@ -66,6 +74,8 @@ test("parseProxyRulesEditor reads route fields without dropping unrelated config
   assert.equal(parsed.state.routes[0]?.action.canaryUpstream, "http://canary.internal:8080");
   assert.equal(parsed.state.routes[0]?.action.hashPolicy, "header");
   assert.equal(parsed.state.routes[0]?.action.hashKey, "X-User");
+  assert.equal(parsed.state.routes[0]?.action.queryRewrite.set.lang, "ja");
+  assert.equal(parsed.state.routes[0]?.action.queryRewrite.removePrefixes[0], "utm_");
   assert.equal(parsed.state.routes[0]?.action.requestHeaders.set["X-Service"], "service-a");
   assert.equal(parsed.state.defaultRoute?.action.upstream, "http://fallback.internal:8080");
 });
@@ -102,6 +112,12 @@ test("serializeProxyRulesEditor updates routing fields and preserves unrelated k
           hashKey: "session",
           hostRewrite: "",
           pathRewrite: { prefix: "/service-a/" },
+          queryRewrite: {
+            set: { lang: "ja" },
+            add: { preview: "1" },
+            remove: ["debug"],
+            removePrefixes: ["utm_"],
+          },
           requestHeaders: {
             set: { "X-Service": "service-a" },
             add: {},
@@ -130,6 +146,8 @@ test("serializeProxyRulesEditor updates routing fields and preserves unrelated k
   assert.equal(reparsed.state.routes[0]?.action.hashPolicy, "cookie");
   assert.equal(reparsed.state.routes[0]?.action.hashKey, "session");
   assert.equal(reparsed.state.routes[0]?.action.pathRewrite?.prefix, "/service-a/");
+  assert.equal(reparsed.state.routes[0]?.action.queryRewrite.set.lang, "ja");
+  assert.equal(reparsed.state.routes[0]?.action.queryRewrite.removePrefixes[0], "utm_");
   assert.equal(reparsed.state.routes[0]?.action.responseHeaders.add["Cache-Control"], "no-store");
   assert.equal(reparsed.state.defaultRoute?.action.upstream, "http://fallback.internal:8080");
 });
@@ -165,4 +183,10 @@ test("multiline helpers preserve list and header operations", () => {
     "X-Mode": "blue",
   });
   assert.equal(headerMapToMultiline({ "X-Test": "one", "X-Trace": "" }), "X-Test: one\nX-Trace: ");
+  assert.deepEqual(multilineToQueryMap("lang=ja\npreview=1\nflag"), {
+    lang: "ja",
+    preview: "1",
+    flag: "",
+  });
+  assert.equal(queryMapToMultiline({ lang: "ja", flag: "" }), "lang=ja\nflag");
 });
