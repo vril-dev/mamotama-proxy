@@ -20,6 +20,28 @@ type RulesDTO = {
   rules?: Rule[];
 };
 
+type CacheStoreConfig = {
+  enabled: boolean;
+  store_dir: string;
+  max_bytes: number;
+};
+
+type CacheStoreStats = {
+  size_bytes?: number;
+  entry_count?: number;
+  hits_total?: number;
+  misses_total?: number;
+  stores_total?: number;
+  evictions_total?: number;
+  clears_total?: number;
+};
+
+type CacheStoreDTO = {
+  etag?: string;
+  store?: CacheStoreConfig;
+  stats?: CacheStoreStats;
+};
+
 type ValidateResp = {
   ok: boolean;
   messages?: string[];
@@ -50,8 +72,17 @@ export default function CacheRulePanel() {
   const [raw, setRaw] = useState("");
   const [rawMode, setRawMode] = useState(false);
   const [etag, setEtag] = useState<string | null>(null);
+  const [storeEtag, setStoreEtag] = useState<string | null>(null);
+  const [storeConfig, setStoreConfig] = useState<CacheStoreConfig>({
+    enabled: true,
+    store_dir: "/var/lib/mamotama/cache",
+    max_bytes: 2 * 1024 * 1024 * 1024,
+  });
+  const [storeStats, setStoreStats] = useState<CacheStoreStats>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingStore, setSavingStore] = useState(false);
+  const [clearingStore, setClearingStore] = useState(false);
   const [validating, setValidating] = useState(false);
   const [valid, setValid] = useState<boolean | null>(null);
   const [messages, setMessages] = useState<string[]>([]);
@@ -59,9 +90,12 @@ export default function CacheRulePanel() {
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [serverRaw, setServerRaw] = useState("");
   const [serverRuleSig, setServerRuleSig] = useState("[]");
+  const [serverStoreSig, setServerStoreSig] = useState("");
 
   const ruleSig = useMemo(() => JSON.stringify(rules), [rules]);
   const dirty = raw !== serverRaw || ruleSig !== serverRuleSig;
+  const storeSig = useMemo(() => JSON.stringify(storeConfig), [storeConfig]);
+  const storeDirty = storeSig !== serverStoreSig;
 
   const lineCount = useMemo(() => (raw ? raw.split(/\n/).length : 0), [raw]);
 
@@ -69,14 +103,26 @@ export default function CacheRulePanel() {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGetJson<RulesDTO>("/cache-rules");
+      const [data, store] = await Promise.all([
+        apiGetJson<RulesDTO>("/cache-rules"),
+        apiGetJson<CacheStoreDTO>("/cache-store"),
+      ]);
       const nextRules = Array.isArray(data.rules) ? data.rules : [];
       const nextRaw = data.raw ?? "";
       setRules(nextRules);
       setRaw(nextRaw);
       setEtag(data.etag ?? null);
+      setStoreEtag(store.etag ?? null);
+      const nextStore = store.store ?? {
+        enabled: true,
+        store_dir: "/var/lib/mamotama/cache",
+        max_bytes: 2 * 1024 * 1024 * 1024,
+      };
+      setStoreConfig(nextStore);
+      setStoreStats(store.stats ?? {});
       setServerRaw(nextRaw);
       setServerRuleSig(JSON.stringify(nextRules));
+      setServerStoreSig(JSON.stringify(nextStore));
       setValid(null);
       setMessages([]);
     } catch (e: any) {
@@ -106,6 +152,41 @@ export default function CacheRulePanel() {
       setValidating(false);
     }
   }, [rawMode, raw, rules]);
+
+  const saveStore = useCallback(async () => {
+    setSavingStore(true);
+    setError(null);
+    try {
+      const js = await apiPutJson<{ ok: boolean; etag?: string; store?: CacheStoreConfig }>("/cache-store", storeConfig, {
+        headers: storeEtag ? { "If-Match": storeEtag } : {},
+      });
+      if (!js.ok) {
+        throw new Error("save failed");
+      }
+      setStoreEtag(js.etag ?? null);
+      setMessages(["Cache store settings saved."]);
+      await load();
+    } catch (e: any) {
+      setError(e?.message || "save failed");
+    } finally {
+      setSavingStore(false);
+    }
+  }, [load, storeConfig, storeEtag]);
+
+  const clearStore = useCallback(async () => {
+    setClearingStore(true);
+    setError(null);
+    try {
+      const js = await apiPostJson<{ ok: boolean; clear?: { cleared_entries?: number; cleared_bytes?: number } }>("/cache-store/clear", {});
+      const clear = js.clear ?? {};
+      setMessages([`Cache cleared. entries=${clear.cleared_entries ?? 0} bytes=${clear.cleared_bytes ?? 0}`]);
+      await load();
+    } catch (e: any) {
+      setError(e?.message || "clear failed");
+    } finally {
+      setClearingStore(false);
+    }
+  }, [load]);
 
   const save = useCallback(async () => {
     setSaving(true);
@@ -181,6 +262,83 @@ export default function CacheRulePanel() {
       </header>
 
       {error && <Alert kind="error" title="Error" message={error} onClose={() => setError(null)} />}
+
+      <section className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold">Internal Cache Store</h2>
+            <p className="text-sm text-neutral-500">Disk-backed cache for matched `ALLOW` rules.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            {storeDirty && <Badge color="amber">Unsaved</Badge>}
+            {storeEtag && <MonoTag label="Store ETag" value={storeEtag} />}
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-3">
+          <label className="grid gap-1">
+            <span className="text-sm font-medium">Enabled</span>
+            <label className="inline-flex items-center gap-2 rounded-xl border px-3 py-2">
+              <input
+                type="checkbox"
+                checked={storeConfig.enabled}
+                onChange={(e) => setStoreConfig((prev) => ({ ...prev, enabled: e.target.checked }))}
+              />
+              <span className="text-sm">Enable internal cache</span>
+            </label>
+          </label>
+          <label className="grid gap-1">
+            <span className="text-sm font-medium">Store Directory</span>
+            <input
+              className="w-full rounded-xl border px-3 py-2 text-sm"
+              value={storeConfig.store_dir}
+              onChange={(e) => setStoreConfig((prev) => ({ ...prev, store_dir: e.target.value }))}
+            />
+          </label>
+          <label className="grid gap-1">
+            <span className="text-sm font-medium">Max Bytes</span>
+            <input
+              type="number"
+              className="w-full rounded-xl border px-3 py-2 text-sm"
+              value={storeConfig.max_bytes}
+              onChange={(e) =>
+                setStoreConfig((prev) => ({
+                  ...prev,
+                  max_bytes: Number.isFinite(+e.target.value) ? parseInt(e.target.value || "0", 10) : 0,
+                }))
+              }
+            />
+          </label>
+        </div>
+
+        <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6 text-sm">
+          <StatChip label="Entries" value={String(storeStats.entry_count ?? 0)} />
+          <StatChip label="Size" value={String(storeStats.size_bytes ?? 0)} />
+          <StatChip label="Hits" value={String(storeStats.hits_total ?? 0)} />
+          <StatChip label="Misses" value={String(storeStats.misses_total ?? 0)} />
+          <StatChip label="Stores" value={String(storeStats.stores_total ?? 0)} />
+          <StatChip label="Evictions" value={String(storeStats.evictions_total ?? 0)} />
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="px-3 py-1.5 rounded-xl shadow text-sm hover:bg-neutral-50 border"
+            onClick={() => void saveStore()}
+            disabled={loading || savingStore || !storeDirty}
+          >
+            {savingStore ? "Saving..." : "Save Store"}
+          </button>
+          <button
+            type="button"
+            className="px-3 py-1.5 rounded-xl shadow text-sm hover:bg-red-50 border"
+            onClick={() => void clearStore()}
+            disabled={loading || clearingStore}
+          >
+            {clearingStore ? "Clearing..." : "Clear All"}
+          </button>
+        </div>
+      </section>
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-sm text-neutral-600">
@@ -354,6 +512,15 @@ export default function CacheRulePanel() {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+function StatChip({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2">
+      <div className="text-xs uppercase tracking-wide text-neutral-500">{label}</div>
+      <div className="text-sm font-medium break-all">{value}</div>
     </div>
   );
 }

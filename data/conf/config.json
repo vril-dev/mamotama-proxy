@@ -53,6 +53,7 @@
   },
   "paths": {
     "proxy_config_file": "conf/proxy.json",
+    "cache_store_file": "conf/cache-store.json",
     "rules_file": "rules/mamotama.conf",
     "bypass_file": "conf/waf.bypass",
     "country_block_file": "conf/country-block.conf",

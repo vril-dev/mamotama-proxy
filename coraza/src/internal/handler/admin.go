@@ -25,6 +25,7 @@ func StatusHandler(c *gin.Context) {
 	ipReputationStatus := IPReputationStatus()
 	adminRateStats := AdminRateLimitStatsSnapshot()
 	serverTLSStatus := ServerTLSRuntimeStatusSnapshot()
+	_, _, responseCacheCfg, responseCacheStats := ResponseCacheSnapshot()
 	_, proxyETag, proxyCfg, proxyHealth, proxyRollbackDepth := ProxyRulesSnapshot()
 	dbTotalRows := 0
 	dbWAFBlockRows := 0
@@ -172,6 +173,16 @@ func StatusHandler(c *gin.Context) {
 		"upstream_health_healthy_backends":     proxyHealth.HealthyBackends,
 		"proxy_upstreams":                      proxyCfg.Upstreams,
 		"proxy_load_balancing_strategy":        proxyCfg.LoadBalancingStrategy,
+		"cache_store_enabled":                  responseCacheCfg.Enabled,
+		"cache_store_dir":                      responseCacheCfg.StoreDir,
+		"cache_max_bytes":                      responseCacheCfg.MaxBytes,
+		"cache_size_bytes":                     responseCacheStats.SizeBytes,
+		"cache_entry_count":                    responseCacheStats.EntryCount,
+		"cache_hits_total":                     responseCacheStats.Hits,
+		"cache_misses_total":                   responseCacheStats.Misses,
+		"cache_stores_total":                   responseCacheStats.Stores,
+		"cache_evictions_total":                responseCacheStats.Evictions,
+		"cache_clears_total":                   responseCacheStats.Clears,
 		"crs_enabled":                          config.CRSEnable,
 		"crs_setup_file":                       config.CRSSetupFile,
 		"crs_rules_dir":                        config.CRSRulesDir,
