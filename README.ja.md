@@ -666,6 +666,8 @@ Claudeコマンドプロバイダのローカルモックテスト:
 
 ### エンドポイント一覧
 
+リクエスト/レスポンスの詳細スキーマは [docs/api/admin-openapi.yaml](docs/api/admin-openapi.yaml) にまとめています（OpenAPI 3.0 / Swagger互換）。
+
 | メソッド | パス | 説明 |
 | --- | --- | --- |
 | GET | `/mamotama-api/status` | 現在のWAF設定状態を取得 |
