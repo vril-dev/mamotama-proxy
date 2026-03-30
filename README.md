@@ -483,6 +483,9 @@ For multi-node operation, set `storage.db_sync_interval_sec` (for example `10`) 
 
 Scale-out note: for multiple Coraza nodes, use a shared MySQL backend (`db + mysql`) as the standard setup. `file` and `db + sqlite` are intended for single-node or local validation use.
 
+Request-time security plugins run in order `ip_reputation -> bot_defense -> semantic` before WAF inspection.
+Plugin authoring notes are in [`docs/request_security_plugins.md`](docs/request_security_plugins.md).
+
 ### WAF Regression Test (GoTestWAF)
 
 Run the local regression test:

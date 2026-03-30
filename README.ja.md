@@ -463,6 +463,9 @@ MySQL をDBログ/設定運用で使う場合は、`data/conf/config.json` の `
 
 スケールアウト運用では、共有MySQLを使う `db + mysql` を標準構成にしてください。`file` と `db + sqlite` は基本的に単一ノード運用/ローカル検証向けです。
 
+request-time security plugin は `ip_reputation -> bot_defense -> semantic` の順で WAF より前に実行されます。
+plugin 作成手順は [`docs/request_security_plugins.md`](docs/request_security_plugins.md) を参照してください。
+
 ### WAF回帰テスト（GoTestWAF）
 
 ローカルで回帰テストを実行:
