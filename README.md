@@ -483,6 +483,9 @@ For multi-node operation, set `storage.db_sync_interval_sec` (for example `10`) 
 
 Scale-out note: for multiple Coraza nodes, use a shared MySQL backend (`db + mysql`) as the standard setup. `file` and `db + sqlite` are intended for single-node or local validation use.
 
+Request-time security plugins run in order `ip_reputation -> bot_defense -> semantic` before WAF inspection.
+Plugin authoring notes are in [`docs/request_security_plugins.md`](docs/request_security_plugins.md).
+
 ### WAF Regression Test (GoTestWAF)
 
 Run the local regression test:
@@ -838,7 +841,7 @@ Oversized JWT header/cookie values are ignored for `jwt_sub` extraction and are 
 ### IP Reputation
 
 You can edit `paths.ip_reputation_file` (default: `conf/ip-reputation.conf`) from `/ip-reputation`.
-Evaluation happens before bot defense, semantic scoring, and WAF, and emits `ip_reputation` events plus notification-source state transitions.
+Request-time security plugins run in order `ip_reputation -> bot_defense -> semantic` before WAF, and `ip_reputation` emits notification-source state transitions.
 
 - `feed_urls` accepts local files (`/path/to/feed.txt` or `file:///...`) and HTTP/HTTPS URLs
 - `allowlist` and `blocklist` accept both IPv4 and IPv6 CIDRs

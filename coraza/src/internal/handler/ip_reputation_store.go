@@ -158,13 +158,17 @@ func IPReputationStatus() ipReputationStatusSnapshot {
 }
 
 func EvaluateIPReputation(ip string) (bool, int) {
-	ipReputationMu.RLock()
-	store := ipReputationStoreRT
-	ipReputationMu.RUnlock()
+	store := currentIPReputationStore()
 	if store == nil {
 		return false, http.StatusForbidden
 	}
 	return store.IsBlocked(ip), store.BlockStatusCode()
+}
+
+func currentIPReputationStore() *ipReputationStore {
+	ipReputationMu.RLock()
+	defer ipReputationMu.RUnlock()
+	return ipReputationStoreRT
 }
 
 func GetIPReputation(c *gin.Context) {
@@ -390,6 +394,10 @@ func (s *ipReputationStore) BlockStatusCode() int {
 		return http.StatusForbidden
 	}
 	return s.blockStatusCode
+}
+
+func (s *ipReputationStore) Enabled() bool {
+	return s != nil && s.enabled
 }
 
 func (s *ipReputationStore) IsBlocked(ipStr string) bool {
