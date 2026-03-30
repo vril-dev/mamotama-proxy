@@ -418,12 +418,13 @@ upstreams、routes、default route、dry-run は構造化UIで扱えます。tra
 
 ```bash
 make setup
-make ui-build-sync
 make compose-up
 ```
 
 起動後、管理UIは `http://localhost:${CORAZA_PORT:-9090}/mamotama-ui` で開けます。  
 `Settings` 画面の API キー入力欄に `data/conf/config.json` の `admin.api_key_primary` を設定して利用してください。
+`make compose-up` と `make build` は埋め込みUIを自動更新します。`make ui-build-sync`
+なしで素の `go build` を行うと、古い bundle ではなく placeholder ページが埋め込まれます。
 
 ### Makeショートカット
 
