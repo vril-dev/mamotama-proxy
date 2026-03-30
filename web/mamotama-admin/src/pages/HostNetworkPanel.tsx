@@ -43,6 +43,7 @@ export default function HostNetworkPanel() {
 
   const dirty = useMemo(() => raw !== serverRaw, [raw, serverRaw]);
   const lineCount = useMemo(() => (raw ? raw.split(/\n/).length : 0), [raw]);
+  const readOnly = status?.supported === false;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -153,6 +154,12 @@ export default function HostNetworkPanel() {
         </div>
       ) : null}
 
+      {readOnly ? (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          This feature is currently Linux-only. Settings remain visible here, but editing and save actions are disabled on unsupported platforms.
+        </div>
+      ) : null}
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
         <Metric label="State" value={String(status?.state ?? "-")} />
         <Metric label="Can Apply Now" value={String(status?.can_apply_now ?? "-")} />
@@ -173,14 +180,14 @@ export default function HostNetworkPanel() {
             <button
               className="px-3 py-1.5 rounded-xl shadow text-sm hover:bg-neutral-50 border"
               onClick={() => void validate()}
-              disabled={validating}
+              disabled={validating || readOnly}
             >
               {validating ? "Validating..." : "Validate"}
             </button>
             <button
               className="px-3 py-1.5 rounded-xl shadow text-sm bg-black text-white disabled:opacity-50"
               onClick={() => void save()}
-              disabled={saving || !dirty}
+              disabled={saving || !dirty || readOnly}
             >
               {saving ? "Saving..." : "Save"}
             </button>
@@ -191,6 +198,7 @@ export default function HostNetworkPanel() {
           className="w-full h-[380px] p-3 border rounded-xl font-mono text-sm leading-5 outline-none focus:ring-2 focus:ring-black/20"
           value={raw}
           onChange={(e) => setRaw(e.target.value)}
+          readOnly={readOnly}
           spellCheck={false}
         />
 
