@@ -101,3 +101,49 @@ func TestRunRequestSecurityPluginsStopsOnHandledResponse(t *testing.T) {
 		t.Fatalf("unexpected order: %#v", order)
 	}
 }
+
+func TestRunRequestSecurityPluginsSkipsDisabledAndWrongPhase(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/demo", nil)
+
+	var order []string
+	plugins := []requestSecurityPlugin{
+		testRequestSecurityPlugin{
+			name:    "disabled",
+			phase:   requestSecurityPluginPhasePreWAF,
+			enabled: false,
+			handle: func(_ *gin.Context, _ *requestSecurityPluginContext) bool {
+				order = append(order, "disabled")
+				return true
+			},
+		},
+		testRequestSecurityPlugin{
+			name:    "wrong-phase",
+			phase:   requestSecurityPluginPhasePostWAF,
+			enabled: true,
+			handle: func(_ *gin.Context, _ *requestSecurityPluginContext) bool {
+				order = append(order, "wrong-phase")
+				return true
+			},
+		},
+		testRequestSecurityPlugin{
+			name:    "active",
+			phase:   requestSecurityPluginPhasePreWAF,
+			enabled: true,
+			handle: func(_ *gin.Context, _ *requestSecurityPluginContext) bool {
+				order = append(order, "active")
+				return true
+			},
+		},
+	}
+
+	ctx := newRequestSecurityPluginContext("req-1", "10.0.0.1", "JP", time.Unix(1, 0))
+	if ok := runRequestSecurityPlugins(c, requestSecurityPluginPhasePreWAF, plugins, ctx); !ok {
+		t.Fatal("expected plugin chain to continue")
+	}
+	if len(order) != 1 || order[0] != "active" {
+		t.Fatalf("unexpected order: %#v", order)
+	}
+}
