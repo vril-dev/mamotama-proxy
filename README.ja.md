@@ -11,6 +11,23 @@ Coraza + CRS WAFプロジェクト
 このプロジェクトは、Coraza WAF と OWASP Core Rule Set (CRS) を組み合わせた
 軽量かつ強力なアプリケーション防御システム「mamotama」です。
 
+## 製品ポジショニング
+
+`mamotama-proxy` はこのファミリーの汎用 reverse proxy / API gateway 製品です。`mamotama` と同じ中核セキュリティ制御を持ちつつ、built-in の route 管理と TLS 終端を備え、device 指向の `mamotama-edge` より軽量に使えます。
+
+| 項目 | `mamotama` | `mamotama-proxy` | `mamotama-edge` |
+| --- | --- | --- | --- |
+| 実行形態 | Docker / compose | single binary または Docker | single binary / `systemd` |
+| リバースプロキシ + route | `nginx` 前段、内蔵 route editor なし | 内蔵 gateway + route editor | 内蔵 gateway + route editor |
+| 中核セキュリティ制御 | IP reputation / bot / semantic / rate / country | IP reputation / bot / semantic / rate / country | IP reputation / bot / semantic / rate / country |
+| Device / center 機能 | × | × | device auth + center link |
+| キャッシュ + bypass | `nginx` キャッシュ + bypass rules | 内部キャッシュ + bypass rules | 内部キャッシュ + bypass rules |
+| TLS + 管理 UI | `nginx` TLS + 別 frontend path | built-in TLS + 内蔵管理 UI | built-in TLS + 内蔵管理 UI |
+| DB / マルチノード | 共有 DB 対応 | 共有 DB 対応 | ローカルノード指向 |
+| Host hardening | × | × | experimental L3/L4 host hardening |
+
+凡例と詳細な比較表は [docs/product-comparison.ja.md](docs/product-comparison.ja.md) を参照してください。
+
 ---
 
 ## ルールファイルについて
@@ -92,7 +109,7 @@ make preset-check PRESET=minimal
 
 #### 任意: Built-in TLS 終端
 
-`[proxy]` は `data/conf/config.json` から直接 HTTPS 待受できます。listener 証明書は config-only で、admin UI からの編集はありません。
+`mamotama-proxy` は `data/conf/config.json` から直接 HTTPS 待受できます。listener 証明書は config-only で、admin UI からの編集はありません。
 
 ```json
 "server": {

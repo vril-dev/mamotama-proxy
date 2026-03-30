@@ -10,6 +10,23 @@ Coraza + CRS WAF project
 
 `mamotama` is a lightweight yet powerful application protection stack built with Coraza WAF and OWASP Core Rule Set (CRS).
 
+## Product Positioning
+
+`mamotama-proxy` is the general-purpose reverse proxy / API gateway in the family. It keeps the core `mamotama` security controls, adds built-in route management and TLS termination, and stays lighter-weight than the device-oriented `mamotama-edge` product.
+
+| Category | `mamotama` | `mamotama-proxy` | `mamotama-edge` |
+| --- | --- | --- | --- |
+| Runtime shape | Docker / compose | single binary or Docker | single binary / `systemd` |
+| Reverse proxy + routes | `nginx` fronted, no built-in route editor | built-in gateway + route editor | built-in gateway + route editor |
+| Core security controls | IP reputation, bot, semantic, rate, country | IP reputation, bot, semantic, rate, country | IP reputation, bot, semantic, rate, country |
+| Device / center features | × | × | device auth + center link |
+| Cache + bypass | `nginx` cache + bypass rules | internal cache + bypass rules | internal cache + bypass rules |
+| TLS + admin UI | `nginx` TLS + separate frontend path | built-in TLS + embedded admin UI | built-in TLS + embedded admin UI |
+| DB / multi-node | shared DB capable | shared DB capable | local node oriented |
+| Host hardening | × | × | experimental L3/L4 host hardening |
+
+Legend: `○`/`△`/`×` details and the full feature matrix are in [docs/product-comparison.md](docs/product-comparison.md).
+
 ---
 
 ## About Rule Files
@@ -91,7 +108,7 @@ Container startup uses only:
 
 #### Optional Built-in TLS Termination
 
-`[proxy]` can terminate HTTPS directly from `data/conf/config.json`. This is config-only; there is no admin UI editor for listener certificates.
+`mamotama-proxy` can terminate HTTPS directly from `data/conf/config.json`. This is config-only; there is no admin UI editor for listener certificates.
 
 ```json
 "server": {
