@@ -228,87 +228,12 @@ func ProxyHandler(c *gin.Context) {
 		return
 	}
 
-	if blocked, statusCode := EvaluateIPReputation(clientIP); blocked {
-		evt := map[string]any{
-			"ts":       time.Now().UTC().Format(time.RFC3339Nano),
-			"service":  "coraza",
-			"level":    "WARN",
-			"event":    "ip_reputation",
-			"req_id":   reqID,
-			"trace_id": observability.TraceIDFromContext(c.Request.Context()),
-			"ip":       clientIP,
-			"country":  country,
-			"path":     c.Request.URL.Path,
-			"status":   statusCode,
-		}
-		appendProxyRouteLogFields(evt, c.Request)
-		emitJSONLog(evt)
-		_ = appendEventToFile(evt)
-		c.AbortWithStatus(statusCode)
+	requestSecurityCtx := newRequestSecurityPluginContext(reqID, clientIP, country, time.Now().UTC())
+	requestSecurityPlugins := newRequestSecurityPlugins()
+	if !runRequestSecurityPlugins(c, requestSecurityPluginPhasePreWAF, requestSecurityPlugins, requestSecurityCtx) {
 		return
 	}
-
-	botDecision := EvaluateBotDefense(c.Request, clientIP, time.Now().UTC())
-	if !botDecision.Allowed {
-		evt := map[string]any{
-			"ts":       time.Now().UTC().Format(time.RFC3339Nano),
-			"service":  "coraza",
-			"level":    "WARN",
-			"event":    "bot_challenge",
-			"req_id":   reqID,
-			"trace_id": observability.TraceIDFromContext(c.Request.Context()),
-			"ip":       clientIP,
-			"country":  country,
-			"path":     c.Request.URL.Path,
-			"status":   botDecision.Status,
-			"mode":     botDecision.Mode,
-		}
-		appendProxyRouteLogFields(evt, c.Request)
-		emitJSONLog(evt)
-		_ = appendEventToFile(evt)
-
-		WriteBotDefenseChallenge(c.Writer, c.Request, botDecision)
-		c.Abort()
-		return
-	}
-
-	semanticEval := EvaluateSemanticWithContext(c.Request, clientIP, time.Now().UTC())
-	if semanticEval.Score > 0 {
-		c.Header("X-Mamotama-Semantic-Score", strconv.Itoa(semanticEval.Score))
-	}
-	if semanticEval.Action != semanticActionNone {
-		evt := map[string]any{
-			"ts":              time.Now().UTC().Format(time.RFC3339Nano),
-			"service":         "coraza",
-			"level":           "WARN",
-			"event":           "semantic_anomaly",
-			"req_id":          reqID,
-			"trace_id":        observability.TraceIDFromContext(c.Request.Context()),
-			"ip":              clientIP,
-			"country":         country,
-			"path":            c.Request.URL.Path,
-			"action":          semanticEval.Action,
-			"score":           semanticEval.Score,
-			"reasons":         strings.Join(semanticEval.Reasons, ","),
-			"reason_list":     append([]string(nil), semanticEval.Reasons...),
-			"score_breakdown": semanticSignalLogObjects(semanticEval.Signals),
-		}
-		appendProxyRouteLogFields(evt, c.Request)
-		emitJSONLog(evt)
-		_ = appendEventToFile(evt)
-
-		switch semanticEval.Action {
-		case semanticActionChallenge:
-			if !HasValidSemanticChallengeCookie(c.Request, clientIP, time.Now().UTC()) {
-				WriteSemanticChallenge(c.Writer, c.Request, clientIP)
-				c.Abort()
-				return
-			}
-		case semanticActionBlock:
-			c.AbortWithStatus(http.StatusForbidden)
-			return
-		}
-	}
+	semanticEval := requestSecurityCtx.Semantic
 
 	rateDecision := EvaluateRateLimit(c.Request, clientIP, country, semanticEval.Score, time.Now().UTC())
 	if !rateDecision.Allowed {
