@@ -233,6 +233,7 @@ func TestLoadAppConfigFile(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	raw := `{
 		"server": {"listen_addr": ":18090"},
+		"host_network": {"enabled": true, "backend": "sysctl", "sysctl_profile": "baseline"},
 		"admin": {
 			"api_base_path": "/mamotama-api",
 			"ui_base_path": "/mamotama-ui",
@@ -259,12 +260,16 @@ func TestLoadAppConfigFile(t *testing.T) {
 	if cfg.Paths.ProxyConfigFile != "conf/proxy.json" {
 		t.Fatalf("unexpected proxy_config_file: %s", cfg.Paths.ProxyConfigFile)
 	}
+	if !cfg.HostNetwork.Enabled {
+		t.Fatal("expected host_network.enabled=true")
+	}
 }
 
 func TestLoadAppConfigFileRejectsInvalid(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	raw := `{
 		"server": {"listen_addr": ":9090"},
+		"host_network": {"enabled": true, "backend": "bogus", "sysctl_profile": "baseline"},
 		"admin": {"api_base_path": "/", "ui_base_path": "/mamotama-ui"},
 		"paths": {"proxy_config_file": "conf/proxy.json", "rules_file": "rules/mamotama.conf"},
 		"proxy": {"rollback_history_size": 8},

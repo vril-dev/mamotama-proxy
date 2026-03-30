@@ -33,6 +33,7 @@ APP_PKG ?= ./cmd/server
 PRESET ?= minimal
 PRESET_DIR := presets/$(PRESET)
 PRESET_OVERWRITE ?= 0
+HOSTNET_CONFIG ?= data/conf/config.json
 
 export PUID GUID CORAZA_PORT HOST_CORAZA_PORT WAF_LISTEN_PORT WAF_API_KEY_PRIMARY PROTECTED_HOST
 
@@ -42,6 +43,7 @@ export PUID GUID CORAZA_PORT HOST_CORAZA_PORT WAF_LISTEN_PORT WAF_API_KEY_PRIMAR
 	ui-install ui-test ui-build ui-sync ui-build-sync \
 	compose-config compose-config-mysql compose-up compose-down mysql-up mysql-down \
 	preset-list preset-apply preset-check \
+	hostnet-apply \
 	migrate-proxy-config migrate-proxy-config-check \
 	smoke bench gotestwaf \
 	check ci-local clean
@@ -74,6 +76,7 @@ help:
 	@echo "    - optional: PRESET=$(PRESET) PRESET_OVERWRITE=1"
 	@echo "  make preset-check               Validate preset files without modifying local files"
 	@echo "    - optional: PRESET=$(PRESET)"
+	@echo "  make hostnet-apply              Apply host_network settings from $(HOSTNET_CONFIG) (requires root on Linux)"
 	@echo ""
 	@echo "  make migrate-proxy-config       Generate data/conf/proxy.json from legacy env"
 	@echo "  make migrate-proxy-config-check Validate proxy config file"
@@ -139,6 +142,9 @@ preset-check:
 	python3 -m json.tool "$$preset_dir/config.json" >/dev/null; \
 	python3 -m json.tool "$$preset_dir/proxy.json" >/dev/null; \
 	echo "[preset-check] $(PRESET) ok"
+
+hostnet-apply:
+	cd $(CORAZA_SRC) && $(GO) run $(APP_PKG) -config ../../$(HOSTNET_CONFIG) -apply-host-network
 
 crs-install:
 	./scripts/install_crs.sh

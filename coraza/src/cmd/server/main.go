@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -15,13 +19,37 @@ import (
 	"mamotama/internal/cacheconf"
 	"mamotama/internal/config"
 	"mamotama/internal/handler"
+	"mamotama/internal/hostnet"
 	"mamotama/internal/middleware"
 	"mamotama/internal/observability"
 	"mamotama/internal/waf"
 )
 
 func main() {
+	var configPath string
+	var validateConfigOnly bool
+	var applyHostNetworkOnly bool
+	flag.StringVar(&configPath, "config", "", "Path to configuration file")
+	flag.BoolVar(&validateConfigOnly, "validate-config", false, "Validate configuration file and exit")
+	flag.BoolVar(&applyHostNetworkOnly, "apply-host-network", false, "Apply host_network configuration and exit")
+	flag.Parse()
+	if strings.TrimSpace(configPath) != "" {
+		_ = os.Setenv("WAF_CONFIG_FILE", configPath)
+	}
 	config.LoadEnv()
+	if validateConfigOnly {
+		fmt.Printf("config is valid: %s\n", config.ConfigFile)
+		return
+	}
+	if applyHostNetworkOnly {
+		status, err := hostnet.Apply(context.Background(), config.HostNetworkCfg)
+		if err != nil {
+			log.Fatalf("[HOST_NETWORK][FATAL] apply failed: %v", err)
+		}
+		out, _ := json.MarshalIndent(status, "", "  ")
+		fmt.Println(string(out))
+		return
+	}
 	if config.RuntimeGOMAXPROCS > 0 {
 		prev := runtime.GOMAXPROCS(config.RuntimeGOMAXPROCS)
 		log.Printf("[RUNTIME] GOMAXPROCS set to %d (previous=%d)", config.RuntimeGOMAXPROCS, prev)
@@ -109,6 +137,9 @@ func main() {
 		}
 		log.Printf("[IP_REPUTATION][INIT] loaded")
 	}
+	if err := handler.InitHostNetworkRuntime(config.HostNetworkCfg); err != nil {
+		log.Fatalf("[HOST_NETWORK][FATAL] failed to initialize host network runtime: %v", err)
+	}
 	if err := handler.InitAdminGuards(); err != nil {
 		log.Fatalf("[ADMIN][FATAL] failed to initialize admin guards: %v", err)
 	}
@@ -183,6 +214,8 @@ func main() {
 					config.APIBasePath + "/cache-rules",
 					config.APIBasePath + "/cache-store",
 					config.APIBasePath + "/cache-store/clear",
+					config.APIBasePath + "/host-network",
+					config.APIBasePath + "/host-network:validate",
 					config.APIBasePath + "/country-block-rules",
 					config.APIBasePath + "/rate-limit-rules",
 					config.APIBasePath + "/notifications",
@@ -226,6 +259,9 @@ func main() {
 		api.POST("/cache-store/validate", handler.ValidateResponseCacheStore)
 		api.PUT("/cache-store", handler.PutResponseCacheStore)
 		api.POST("/cache-store/clear", handler.ClearResponseCacheStore)
+		api.GET("/host-network", handler.GetHostNetwork)
+		api.POST("/host-network:validate", handler.ValidateHostNetwork)
+		api.PUT("/host-network", handler.PutHostNetwork)
 		api.GET("/country-block-rules", handler.GetCountryBlockRules)
 		api.POST("/country-block-rules:validate", handler.ValidateCountryBlockRules)
 		api.PUT("/country-block-rules", handler.PutCountryBlockRules)

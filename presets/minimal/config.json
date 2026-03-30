@@ -28,6 +28,13 @@
     "gomaxprocs": 0,
     "memory_limit_mb": 0
   },
+  "host_network": {
+    "enabled": false,
+    "backend": "sysctl",
+    "sysctl_profile": "baseline",
+    "sysctls": {},
+    "state_file": "/var/lib/mamotama-proxy/host_network_state.json"
+  },
   "admin": {
     "api_base_path": "/mamotama-api",
     "ui_base_path": "/mamotama-ui",

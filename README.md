@@ -198,6 +198,19 @@ Notes:
 - `rp_filter=1` can break traffic in asymmetric routing environments
 - `tcp_syncookies` is a fallback for SYN flood handling and does not prevent bandwidth exhaustion
 - firewall / nftables / iptables rate limits should be tuned to real traffic, not copied blindly
+- The admin UI now persists a `host_network` block in `data/conf/config.json`; saving marks the config as `apply_required` until you run `mamotama-proxy -config ... -apply-host-network`
+
+Example:
+
+```json
+"host_network": {
+  "enabled": false,
+  "backend": "sysctl",
+  "sysctl_profile": "baseline",
+  "sysctls": {},
+  "state_file": "/var/lib/mamotama-proxy/host_network_state.json"
+}
+```
 
 ---
 

@@ -26,6 +26,7 @@ func StatusHandler(c *gin.Context) {
 	adminRateStats := AdminRateLimitStatsSnapshot()
 	serverTLSStatus := ServerTLSRuntimeStatusSnapshot()
 	_, _, responseCacheCfg, responseCacheStats := ResponseCacheSnapshot()
+	_, _, hostNetworkCfg, hostNetworkStatus := HostNetworkSnapshot()
 	_, proxyETag, proxyCfg, proxyHealth, proxyRollbackDepth := ProxyRulesSnapshot()
 	dbTotalRows := 0
 	dbWAFBlockRows := 0
@@ -134,6 +135,20 @@ func StatusHandler(c *gin.Context) {
 		"server_tls_acme_failure_total":        serverTLSStatus.ACMEFailureTotal,
 		"runtime_gomaxprocs":                   config.RuntimeGOMAXPROCS,
 		"runtime_memory_limit_mb":              config.RuntimeMemoryLimitMB,
+		"host_network_enabled":                 hostNetworkCfg.Enabled,
+		"host_network_backend":                 hostNetworkCfg.Backend,
+		"host_network_sysctl_profile":          hostNetworkCfg.SysctlProfile,
+		"host_network_sysctls":                 hostNetworkCfg.Sysctls,
+		"host_network_state_file":              hostNetworkCfg.StateFile,
+		"host_network_state":                   hostNetworkStatus.State,
+		"host_network_supported":               hostNetworkStatus.Supported,
+		"host_network_can_apply_now":           hostNetworkStatus.CanApplyNow,
+		"host_network_apply_required":          hostNetworkStatus.ApplyRequired,
+		"host_network_desired_count":           hostNetworkStatus.DesiredCount,
+		"host_network_last_applied_at":         hostNetworkStatus.LastAppliedAt,
+		"host_network_last_applied_hash":       hostNetworkStatus.LastAppliedHash,
+		"host_network_apply_hint":              hostNetworkApplyHint(config.ConfigFile),
+		"host_network_last_error":              hostNetworkStatus.LastError,
 		"proxy_config_file":                    config.ProxyConfigFile,
 		"proxy_etag":                           proxyETag,
 		"upstream_url":                         proxyCfg.UpstreamURL,
