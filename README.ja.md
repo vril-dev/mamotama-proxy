@@ -816,7 +816,7 @@ mamotamaでは、CorazaによるWAF検査を特定のリクエストに対して
 ### IP Reputation 設定
 
 管理ダッシュボード `/ip-reputation` から、`paths.ip_reputation_file`（既定: `conf/ip-reputation.conf`）を編集できます。
-評価は bot defense / semantic / WAF より前に行われ、`ip_reputation` event と通知 source に反映されます。
+request-time security plugin は `ip_reputation -> bot_defense -> semantic` の順で WAF より前に実行され、`ip_reputation` event と通知 source に反映されます。
 
 - `feed_urls` には local file（`/path/to/feed.txt` または `file:///...`）と HTTP/HTTPS URL を指定できます
 - `allowlist` / `blocklist` は IPv4 / IPv6 CIDR の両方に対応します

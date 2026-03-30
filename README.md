@@ -838,7 +838,7 @@ Oversized JWT header/cookie values are ignored for `jwt_sub` extraction and are 
 ### IP Reputation
 
 You can edit `paths.ip_reputation_file` (default: `conf/ip-reputation.conf`) from `/ip-reputation`.
-Evaluation happens before bot defense, semantic scoring, and WAF, and emits `ip_reputation` events plus notification-source state transitions.
+Request-time security plugins run in order `ip_reputation -> bot_defense -> semantic` before WAF, and `ip_reputation` emits notification-source state transitions.
 
 - `feed_urls` accepts local files (`/path/to/feed.txt` or `file:///...`) and HTTP/HTTPS URLs
 - `allowlist` and `blocklist` accept both IPv4 and IPv6 CIDRs
