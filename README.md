@@ -438,12 +438,14 @@ Structured route editing is available for upstreams, routes, default route, and 
 
 ```bash
 make setup
-make ui-build-sync
 make compose-up
 ```
 
 Open the embedded admin UI at `http://localhost:${CORAZA_PORT:-9090}/mamotama-ui`.
 Set API key in `Settings` (`X-API-Key`) and operate via `/mamotama-api/*`.
+`make compose-up` and `make build` refresh the embedded UI automatically. A plain
+`go build` without `make ui-build-sync` embeds a placeholder page instead of a
+stale previously-committed bundle.
 
 ### Make Shortcuts
 

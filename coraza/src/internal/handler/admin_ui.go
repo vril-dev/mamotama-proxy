@@ -33,28 +33,17 @@ func RegisterAdminUIRoutes(r *gin.Engine) {
 	}
 
 	serveFile := func(c *gin.Context, relPath string) {
-		if relPath == "" {
-			relPath = "index.html"
-		}
-		relPath = strings.TrimPrefix(path.Clean("/"+relPath), "/")
-		if relPath == "." {
-			relPath = "index.html"
-		}
-
-		if relPath != "index.html" {
-			if _, err := fs.Stat(uiFS, relPath); err != nil {
-				relPath = "index.html"
-			}
-		}
-
-		raw, err := fs.ReadFile(uiFS, relPath)
+		raw, resolvedPath, placeholder, err := readAdminUIAsset(uiFS, relPath)
 		if err != nil {
 			c.Status(http.StatusNotFound)
 			return
 		}
-		ct := mime.TypeByExtension(path.Ext(relPath))
+		ct := mime.TypeByExtension(path.Ext(resolvedPath))
 		if ct == "" {
 			ct = http.DetectContentType(raw)
+		}
+		if placeholder {
+			ct = "text/html; charset=utf-8"
 		}
 		c.Data(http.StatusOK, ct, raw)
 	}
@@ -117,4 +106,34 @@ func RegisterAdminUIRoutes(r *gin.Engine) {
 		p := strings.TrimPrefix(c.Param("filepath"), "/")
 		serveFile(c, p)
 	})
+}
+
+func readAdminUIAsset(uiFS fs.FS, relPath string) ([]byte, string, bool, error) {
+	if relPath == "" {
+		relPath = "index.html"
+	}
+	relPath = strings.TrimPrefix(path.Clean("/"+relPath), "/")
+	if relPath == "." {
+		relPath = "index.html"
+	}
+
+	if relPath != "index.html" {
+		if _, err := fs.Stat(uiFS, relPath); err != nil {
+			relPath = "index.html"
+		}
+	}
+
+	raw, err := fs.ReadFile(uiFS, relPath)
+	if err == nil {
+		return raw, relPath, false, nil
+	}
+	if relPath != "index.html" {
+		return nil, "", false, err
+	}
+
+	raw, err = fs.ReadFile(uiFS, "placeholder.html")
+	if err != nil {
+		return nil, "", false, err
+	}
+	return raw, "placeholder.html", true, nil
 }

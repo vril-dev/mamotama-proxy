@@ -64,7 +64,7 @@ help:
 	@echo ""
 	@echo "  make compose-config             Validate docker compose config"
 	@echo "  make compose-config-mysql       Validate compose config with mysql profile"
-	@echo "  make compose-up                 Start coraza service"
+	@echo "  make compose-up                 Build embedded UI and start coraza service"
 	@echo "  make compose-down               Stop stack"
 	@echo "  make mysql-up                   Start local mysql profile service"
 	@echo "  make mysql-down                 Stop local mysql profile service"
@@ -169,8 +169,11 @@ ui-sync:
 		echo "[ui-sync] missing $(UI_DIR)/dist (run: make ui-build)"; \
 		exit 1; \
 	fi
-	rm -rf $(UI_EMBED_DIR)
-	mkdir -p $(UI_EMBED_DIR)
+	@mkdir -p $(UI_EMBED_DIR)
+	find "$(UI_EMBED_DIR)" -mindepth 1 \
+		! -name '.gitignore' \
+		! -name 'placeholder.html' \
+		-exec rm -rf {} +
 	cp -a $(UI_DIR)/dist/. $(UI_EMBED_DIR)/
 	@echo "[ui-sync] synced $(UI_DIR)/dist -> $(UI_EMBED_DIR)"
 
@@ -184,7 +187,7 @@ compose-config-mysql:
 	docker compose --profile mysql config >/dev/null
 	@echo "[compose-config-mysql] ok"
 
-compose-up:
+compose-up: ui-build-sync
 	PUID="$(PUID)" GUID="$(GUID)" CORAZA_PORT="$(CORAZA_PORT)" WAF_LISTEN_PORT="$(WAF_LISTEN_PORT)" docker compose up -d --build coraza
 
 compose-down:
@@ -202,7 +205,7 @@ migrate-proxy-config:
 migrate-proxy-config-check:
 	./scripts/migrate_proxy_config.sh --check
 
-smoke:
+smoke: ui-build-sync
 	@set -euo pipefail; \
 	backup="$$(mktemp)"; \
 	cp data/conf/proxy.json "$$backup"; \
