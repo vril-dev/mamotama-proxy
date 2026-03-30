@@ -37,7 +37,6 @@ var (
 	ServerTLSACMEStaging      bool
 	RuntimeGOMAXPROCS         int
 	RuntimeMemoryLimitMB      int
-	HostNetworkCfg            HostNetworkConfig
 	RulesFile                 string
 	BypassFile                string
 	CountryBlockFile          string
@@ -149,7 +148,6 @@ func applyAppConfig(cfg appConfigFile) {
 	ServerTLSACMEStaging = cfg.Server.TLS.ACME.Staging
 	RuntimeGOMAXPROCS = parseRuntimeGOMAXPROCS(strconv.Itoa(cfg.Runtime.GOMAXPROCS))
 	RuntimeMemoryLimitMB = parseRuntimeMemoryLimitMB(strconv.Itoa(cfg.Runtime.MemoryLimitMB))
-	HostNetworkCfg = NormalizeHostNetworkConfig(cfg.HostNetwork)
 
 	RulesFile = strings.TrimSpace(cfg.Paths.RulesFile)
 	if RulesFile == "" {

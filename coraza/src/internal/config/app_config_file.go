@@ -11,7 +11,6 @@ import (
 type appConfigFile struct {
 	Server        appServerConfig        `json:"server"`
 	Runtime       appRuntimeConfig       `json:"runtime"`
-	HostNetwork   HostNetworkConfig      `json:"host_network"`
 	Admin         appAdminConfig         `json:"admin"`
 	Paths         appPathsConfig         `json:"paths"`
 	Proxy         appProxyConfig         `json:"proxy"`
@@ -34,12 +33,12 @@ type appServerConfig struct {
 }
 
 type appServerTLSConfig struct {
-	Enabled          bool                   `json:"enabled"`
-	CertFile         string                 `json:"cert_file"`
-	KeyFile          string                 `json:"key_file"`
-	MinVersion       string                 `json:"min_version"`
-	RedirectHTTP     bool                   `json:"redirect_http"`
-	HTTPRedirectAddr string                 `json:"http_redirect_addr"`
+	Enabled          bool   `json:"enabled"`
+	CertFile         string `json:"cert_file"`
+	KeyFile          string `json:"key_file"`
+	MinVersion       string `json:"min_version"`
+	RedirectHTTP     bool   `json:"redirect_http"`
+	HTTPRedirectAddr string `json:"http_redirect_addr"`
 	ACME             appServerTLSACMEConfig `json:"acme"`
 }
 
@@ -57,17 +56,17 @@ type appRuntimeConfig struct {
 }
 
 type appAdminConfig struct {
-	APIBasePath           string                  `json:"api_base_path"`
-	UIBasePath            string                  `json:"ui_base_path"`
-	APIKeyPrimary         string                  `json:"api_key_primary"`
-	APIKeySecondary       string                  `json:"api_key_secondary"`
-	APIAuthDisable        bool                    `json:"api_auth_disable"`
-	CORSAllowedOrigins    []string                `json:"cors_allowed_origins"`
-	StrictOverride        bool                    `json:"strict_override"`
-	AllowInsecureDefaults bool                    `json:"allow_insecure_defaults"`
-	ExternalMode          string                  `json:"external_mode"`
-	TrustedCIDRs          []string                `json:"trusted_cidrs"`
-	TrustForwardedFor     bool                    `json:"trust_forwarded_for"`
+	APIBasePath           string   `json:"api_base_path"`
+	UIBasePath            string   `json:"ui_base_path"`
+	APIKeyPrimary         string   `json:"api_key_primary"`
+	APIKeySecondary       string   `json:"api_key_secondary"`
+	APIAuthDisable        bool     `json:"api_auth_disable"`
+	CORSAllowedOrigins    []string `json:"cors_allowed_origins"`
+	StrictOverride        bool     `json:"strict_override"`
+	AllowInsecureDefaults bool     `json:"allow_insecure_defaults"`
+	ExternalMode          string   `json:"external_mode"`
+	TrustedCIDRs          []string `json:"trusted_cidrs"`
+	TrustForwardedFor     bool     `json:"trust_forwarded_for"`
 	RateLimit             appAdminRateLimitConfig `json:"rate_limit"`
 }
 
@@ -171,13 +170,6 @@ func defaultAppConfigFile() appConfigFile {
 			GOMAXPROCS:    0,
 			MemoryLimitMB: 0,
 		},
-		HostNetwork: HostNetworkConfig{
-			Enabled:       false,
-			Backend:       "sysctl",
-			SysctlProfile: "baseline",
-			Sysctls:       nil,
-			StateFile:     defaultHostNetworkStateFile,
-		},
 		Admin: appAdminConfig{
 			APIBasePath:           "/mamotama-api",
 			UIBasePath:            "/mamotama-ui",
@@ -277,7 +269,6 @@ func loadAppConfigFile(path string) (appConfigFile, error) {
 func normalizeAppConfigFile(cfg *appConfigFile) {
 	cfg.Server.ListenAddr = strings.TrimSpace(cfg.Server.ListenAddr)
 	normalizeAppServerTLSConfig(&cfg.Server.TLS)
-	cfg.HostNetwork = NormalizeHostNetworkConfig(cfg.HostNetwork)
 	cfg.Admin.APIBasePath = strings.TrimSpace(cfg.Admin.APIBasePath)
 	cfg.Admin.UIBasePath = strings.TrimSpace(cfg.Admin.UIBasePath)
 	cfg.Admin.APIKeyPrimary = strings.TrimSpace(cfg.Admin.APIKeyPrimary)
@@ -312,9 +303,6 @@ func normalizeAppConfigFile(cfg *appConfigFile) {
 func validateAppConfigFile(cfg appConfigFile) error {
 	if cfg.Server.ListenAddr == "" {
 		return fmt.Errorf("server.listen_addr is required")
-	}
-	if err := ValidateHostNetworkConfig(cfg.HostNetwork); err != nil {
-		return err
 	}
 	if cfg.Admin.APIBasePath == "" {
 		return fmt.Errorf("admin.api_base_path is required")

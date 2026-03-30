@@ -199,19 +199,6 @@ sudo sysctl --system
 - `rp_filter=1` は非対称ルーティング環境では通信断の原因になります
 - `tcp_syncookies` は SYN flood 時の fallback であり、帯域枯渇そのものは防げません
 - firewall / nftables / iptables の rate limit は実トラフィックに合わせて個別設計してください
-- 管理UI は `data/conf/config.json` に `host_network` ブロックを保存します。保存後は `mamotama-proxy -config ... -apply-host-network` を実行するまで `apply_required` 状態です
-
-例:
-
-```json
-"host_network": {
-  "enabled": false,
-  "backend": "sysctl",
-  "sysctl_profile": "baseline",
-  "sysctls": {},
-  "state_file": "/var/lib/mamotama-proxy/host_network_state.json"
-}
-```
 
 ---
 

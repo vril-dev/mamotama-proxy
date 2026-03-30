@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "npm run test:ui",
-    "test:ui": "rm -rf .tmp-test && tsc -p tsconfig.test.json && node --test .tmp-test/src/lib/api.test.js .tmp-test/src/lib/proxyRulesEditor.test.js; status=$?; rm -rf .tmp-test; exit $status"
+    "test:ui": "rm -rf .tmp-test && tsc -p tsconfig.test.json && node --test .tmp-test/src/lib/api.test.js .tmp-test/src/lib/proxyRulesEditor.test.js"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.11",

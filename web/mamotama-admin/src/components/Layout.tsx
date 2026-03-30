@@ -22,7 +22,6 @@ const navItems: NavItem[] = [
   { to: "/fp-tuner", label: "FP Tuner", hint: "propose and apply exclusions" },
   { to: "/cache", label: "Cache Rules", hint: "edge cache behavior" },
   { to: "/proxy-rules", label: "Proxy Rules", hint: "upstream and transport tuning" },
-  { to: "/host-network", label: "Host Network", hint: "boot-time L3/L4 baseline" },
   { to: "/settings", label: "Settings", hint: "admin preferences and API key" },
 ];
 
