@@ -687,6 +687,8 @@ This keeps external provider payload small by sending one selected event at a ti
 
 ### Endpoint List
 
+Detailed request/response schemas are available in [docs/api/admin-openapi.yaml](docs/api/admin-openapi.yaml) (OpenAPI 3.0, Swagger-compatible).
+
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/mamotama-api/status` | Get current WAF status/config |
